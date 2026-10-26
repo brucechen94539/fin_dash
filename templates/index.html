@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>fin_dash — Household Portfolio Dashboard</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <h1>fin_dash</h1>
+  <p class="sub">View-only household dashboard. No buy / sell actions. Prices may be delayed — see the provider label on each holding.</p>
+</header>
+
+<nav id="owner-tabs" aria-label="Portfolio owner"></nav>
+
+<section id="kpis" class="cards"></section>
+
+<section class="panel">
+  <div class="panel-head">
+    <h2>Holdings</h2>
+    <button id="refresh">Refresh quotes</button>
+  </div>
+  <div class="table-wrap"><table id="holdings">
+    <thead><tr><th>Owner</th><th>Account</th><th>Symbol</th><th>Shares</th><th>Price</th><th>Value</th><th>Day move</th><th>Gain</th><th>Source / quote</th><th></th></tr></thead>
+    <tbody></tbody>
+  </table></div>
+  <p id="detail-hint">Click a holding row for its price + volume chart.</p>
+</section>
+
+<section class="panel" id="detail" hidden>
+  <h2 id="detail-title"></h2>
+  <canvas id="chart" width="900" height="300"></canvas>
+  <p id="detail-meta"></p>
+</section>
+
+<section class="panel">
+  <h2>Add / import</h2>
+  <form id="add-form">
+    <label>Owner <select id="add-owner"></select></label>
+    <label>Account <input id="add-account" placeholder="e.g. Taxable" required></label>
+    <label>Symbol <input id="add-symbol" placeholder="VOO" required></label>
+    <label>Shares <input id="add-shares" type="number" step="any" required></label>
+    <label>Cost / share <input id="add-cost" type="number" step="any" required></label>
+    <button type="submit">Add holding</button>
+  </form>
+  <form id="import-form" enctype="multipart/form-data">
+    <label>Import CSV / XLSX <input id="import-file" type="file" accept=".csv,.xlsx,.xls" required></label>
+    <label>Owner <select id="import-owner"></select></label>
+    <label>Account name <input id="import-account" value="Imported" required></label>
+    <button type="submit">Import</button>
+    <span id="import-result"></span>
+  </form>
+  <p class="small">CSV columns accepted (flexible names): Symbol/Ticker, Shares/Quantity, Cost Basis/Avg Cost, Last Price/Price, Account, Name. Re-importing the same account + symbol updates it instead of duplicating it. See <a href="/static/sample_holdings.csv" download>sample_holdings.csv</a> for the format.</p>
+</section>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
