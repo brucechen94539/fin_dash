@@ -26,7 +26,7 @@ const $ = (s) => document.querySelector(s);
 let masked = false;
 try { masked = localStorage.getItem("fin_dash_masked") === "1"; } catch {}
 // Null is a missing value, not zero: the old money() rendered null
-// as $0.00 (via n || 0), which is how an unpriced Plaid holding's
+// as $0.00 (via n || 0), which is how an unpriced holding's
 // gain/loss showed as 0.0. Now null renders as "—" (or **** when
 // masked, so masking does not reveal whether a value is missing).
 const money = (n) => n == null ? (masked ? "****" : "—")
@@ -152,7 +152,7 @@ function renderHoldings() {
   // so in plain sight, instead of letting a total silently omit them.
   const unpriced = d.unpriced || [];
   $("#unpriced-note").textContent = unpriced.length
-    ? `${unpriced.length} holding${unpriced.length === 1 ? "" : "s"} ha${unpriced.length === 1 ? "s" : "ve"} no price yet (${unpriced.join(", ")}) — shown as — and excluded from totals. Refresh quotes, or check the Plaid sync result for a missing price.`
+    ? `${unpriced.length} holding${unpriced.length === 1 ? "" : "s"} ha${unpriced.length === 1 ? "s" : "ve"} no price yet (${unpriced.join(", ")}) — shown as — and excluded from totals. Refresh quotes, or check the import for a missing price.`
     : "";
   const t = d.totals;
   $("#holdings tfoot").innerHTML = totalRow("Account total", t.day_move, t.gain, t.value);
@@ -295,7 +295,7 @@ function renderTabs() {
 }
 
 function fillSelects() {
-  for (const id of ["#add-owner", "#import-owner", "#plaid-owner"]) {
+  for (const id of ["#add-owner", "#import-owner"]) {
     const sel = $(id);
     if (!sel.dataset.filled) {
       sel.innerHTML = owners.map((o) => `<option value="${o.id}">${o.name}</option>`).join("");
@@ -369,59 +369,6 @@ $("#backup-db").addEventListener("click", () => {
   a.href = "/api/backup"; a.download = "fin_dash_backup.db";
   a.click();
 });
-
-// Plaid (self-hosted only): status on load, Link on connect, sync on
-// demand. No dashboard login is involved — Plaid Link is the auth.
-async function loadPlaidStatus() {
-  try {
-    const s = await (await fetch("/api/plaid/status")).json();
-    const el = $("#plaid-status");
-    if (!s.configured) {
-      el.textContent = "Plaid is not configured yet — set PLAID_CLIENT_ID / PLAID_SECRET in a local .env (start with PLAID_ENV=sandbox) and restart the server. See README.";
-    } else if (!s.token_count) {
-      el.textContent = `Plaid is configured (${s.env}) — no institution linked yet. Click “Connect brokerage via Plaid”.`;
-    } else {
-      el.textContent = `Plaid (${s.env}): linked ${s.institutions.join(", ")}${s.last_sync && s.last_sync[0] ? ` — last sync ${s.last_sync[0]}` : ""}.`;
-    }
-  } catch { $("#plaid-status").textContent = "Could not reach the Plaid status endpoint."; }
-}
-$("#plaid-connect").addEventListener("click", async () => {
-  const r = await (await fetch("/api/plaid/link-token", {method: "POST"})).json();
-  if (!r.link_token) { $("#plaid-result").textContent = r.error || "Could not create a Plaid link token."; return; }
-  if (!window.Plaid) { $("#plaid-result").textContent = "Plaid Link script did not load — check your network and reload."; return; }
-  const handler = Plaid.create({
-    token: r.link_token,
-    onSuccess: async (public_token, metadata) => {
-      const ex = await (await fetch("/api/plaid/exchange", {method: "POST", headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({public_token, institution_name: metadata.institution && metadata.institution.name})})).json();
-      $("#plaid-result").textContent = ex.ok ? `Linked ${ex.institution}. Click “Sync Plaid holdings”.` : (ex.error || "Exchange failed.");
-      loadPlaidStatus();
-    },
-    onExit: (err) => { if (err) $("#plaid-result").textContent = `Plaid Link closed: ${err.error_message || err.error_code}`; },
-  });
-  handler.open();
-});
-$("#plaid-sync").addEventListener("click", async () => {
-  $("#plaid-result").textContent = "Syncing…";
-  const r = await (await fetch("/api/plaid/sync", {method: "POST", headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({owner_id: $("#plaid-owner").value})})).json();
-  if (r.error) {
-    $("#plaid-result").textContent = `Sync failed: ${r.error}`;
-  } else {
-    // Surface the inconsistencies instead of hiding them in a count:
-    // missing cost (Plaid cost_basis is nullable), missing price
-    // (no institution_price and no institution_value to derive one
-    // from), and holdings skipped for having no ticker.
-    let extra = "";
-    if (r.missing_cost && r.missing_cost.length) extra += ` Missing cost basis: ${r.missing_cost.join(", ")}.`;
-    if (r.missing_price && r.missing_price.length) extra += ` Missing price: ${r.missing_price.join(", ")} — those rows show — for value/gain, not $0.00.`;
-    if (r.skipped_details && r.skipped_details.length) extra += ` Skipped: ${r.skipped_details.join("; ")}.`;
-    if (r.errors && r.errors.length) extra += ` Errors: ${r.errors.join("; ")}.`;
-    $("#plaid-result").textContent = `Created ${r.created}, updated ${r.updated}, skipped ${r.skipped}.${extra}`;
-  }
-  if (!r.error) { loadPlaidStatus(); load(); }
-});
-loadPlaidStatus();
 
 $("#refresh").addEventListener("click", async () => {
   const r = await (await fetch("/api/refresh", {method: "POST"})).json();

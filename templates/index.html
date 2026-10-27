@@ -115,22 +115,9 @@
     <span id="import-result"></span>
   </form>
   <p class="small">Import any brokerage export — Fidelity, Schwab, E*TRADE, or a generic CSV — and the dashboard converts it to Fidelity format automatically (Schwab's Cost Basis is treated as a total, E*TRADE's Total Cost / Price Paid as total / per-share, title lines and cash/total rows skipped). No separate conversion step is needed. Re-importing the same account + symbol updates it instead of duplicating it. See <a href="/static/sample_holdings.csv" download>sample_holdings.csv</a> or the Fidelity-format sample in the repo (<code>sample_fidelity.csv</code>) for the format.</p>
-  <p class="small">Export CSV downloads the holdings the dashboard currently shows. Download backup downloads the whole fin_dash database (holdings, accounts, quotes, history cache) — it does <em>not</em> include Plaid access tokens, which live in the separate local <code>plaid_tokens.json</code> file.</p>
+  <p class="small">Export CSV downloads the holdings the dashboard currently shows. Download backup downloads the whole fin_dash database (holdings, accounts, quotes, history cache).</p>
 </section>
 
-<section class="panel">
-  <h2>Plaid sync (self-hosted only)</h2>
-  <p id="plaid-status" class="small">Checking Plaid status…</p>
-  <form id="plaid-form">
-    <label>Owner <select id="plaid-owner"></select></label>
-    <button type="button" id="plaid-connect">Connect brokerage via Plaid</button>
-    <button type="button" id="plaid-sync">Sync Plaid holdings</button>
-    <span id="plaid-result"></span>
-  </form>
-  <p class="small">This is not Muse's Plaid connection — that connection's credentials do not transfer to your Mac. This needs your own Plaid developer account: set <code>PLAID_CLIENT_ID</code> and <code>PLAID_SECRET</code> in a <code>.env</code> file in the same folder as <code>app.py</code> (gitignored, auto-loaded on startup — no export needed), start with <code>PLAID_ENV=sandbox</code>, and restart the server. Plaid Link itself authenticates the brokerage; no dashboard login is added. Sync creates accounts named “Institution — Account (Plaid)” and re-syncing updates the same account + symbol instead of duplicating it — so do not also CSV-import the same brokerage under a different account name, or the holding will appear twice. Plaid cost basis is treated as a total cost (divided by quantity for storage). See README for the full setup steps.</p>
-</section>
-
-<script src="https://cdn.plaid.com/link/v2/stable/link-initialize.js"></script>
 
 <script src="/static/app.js"></script>
 </body>

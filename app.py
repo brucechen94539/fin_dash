@@ -9,9 +9,7 @@ Data sources (hybrid, by design):
   1. CSV / XLSX import (brokerage exports) -- see /api/import
   2. Manual entry
   3. Market-data pull for quotes and price/volume history:
-     - FINNHUB_API_KEY set  -> Finnhub quote endpoint (fast, may be delayed
-       on a free plan; the UI shows the provider and as-of time)
-     - otherwise             -> Yahoo Finance chart endpoint (free, no key,
+     - Yahoo Finance chart endpoint (free, no key,
        unofficial -- see README; Stooq is kept as a last-resort fallback
        but is currently bot-blocked for server requests)
        Quote = regular market price, change vs. previous close.
@@ -22,13 +20,10 @@ Run:
     pip install -r requirements.txt
     python3 app.py          # http://127.0.0.1:5000, PORT env var to change
     # or:  flask --app app run --port 5000
-    # Secrets (PLAID_CLIENT_ID / PLAID_SECRET, FINNHUB_API_KEY) go in
-    # a .env file next to app.py — app.py loads it on startup, no
-    # export needed, and a real exported variable always wins over .env.
 
 Data lives in fin_dash.db (SQLite, created on first run, gitignored).
-Never commit fin_dash.db, a .env file, an API key, or a real brokerage
-export. Use sample_holdings.csv as the import template format.
+Never commit fin_dash.db or a real brokerage export. Use sample_holdings.csv as the import template format.
+No API keys, no .env file, and no brokerage login are used by this app.
 """
 
 import csv
@@ -46,73 +41,8 @@ from flask import Flask, Response, g, jsonify, request, send_from_directory
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
-def _load_dotenv():
-    """Load <app-dir>/.env into os.environ, without a new dependency.
-
-    Why this exists: Flask / Python do NOT read a .env file on their
-    own — a .env file sitting next to app.py is inert until something
-    loads it. Previously fin_dash's README said 'set it in .env and
-    restart', which was wrong: only exported environment variables
-    worked. Now app.py loads .env itself on startup, so creating
-    ~/Documents/github/fin_dash/fin_dash/.env and restarting is
-    enough — no export, no shell history containing a secret.
-
-    Rules (same as python-dotenv's defaults, in miniature):
-    - File is <app-dir>/.env only. A .env in the home directory (~)
-      is NOT read — it must live next to app.py, so a stray home
-      .env cannot silently supply credentials to this app.
-    - Lines are KEY=VALUE, '#' comments and blank lines ignored,
-      an optional leading 'export ' is allowed, and single/double
-      quotes around a value are stripped.
-    - A variable already set in the real environment wins: .env
-      never overwrites an exported value. That keeps `export
-      PLAID_ENV=production` (or a CI secret) authoritative.
-    - A missing or unreadable .env is not an error: the app runs
-      exactly as before, with Plaid reporting 'not configured'.
-    - No new dependency is added for this: the parser is ~20 lines
-      of stdlib, so pulling this change needs no pip install."""
-    path = os.path.join(APP_DIR, ".env")
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            lines = f.read().splitlines()
-    except OSError:
-        return
-    for raw in lines:
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("export "):
-            line = line[len("export "):].strip()
-        if "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        key, value = key.strip(), value.strip()
-        if not key or key in os.environ:
-            continue
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
-            value = value[1:-1]
-        os.environ[key] = value
-
-
-_load_dotenv()
 
 DB_PATH = os.environ.get("FIN_DASH_DB", os.path.join(APP_DIR, "fin_dash.db"))
-FINNHUB_KEY = os.environ.get("FINNHUB_API_KEY", "").strip()
-
-# Plaid (Mac / self-hosted only — see the Plaid section below). No
-# dashboard login is involved: Plaid Link itself authenticates the
-# brokerage connection. Tokens live in plaid_tokens.json next to
-# app.py (gitignored, never in the repo, and NOT included in the
-# /api/backup database download — back that file up separately).
-PLAID_CLIENT_ID = os.environ.get("PLAID_CLIENT_ID", "").strip()
-PLAID_SECRET = os.environ.get("PLAID_SECRET", "").strip()
-PLAID_ENV = os.environ.get("PLAID_ENV", "sandbox").strip() or "sandbox"
-PLAID_TOKENS_PATH = os.environ.get(
-    "PLAID_TOKENS_PATH", os.path.join(APP_DIR, "plaid_tokens.json"))
-_PLAID_HOSTS = {"sandbox": "sandbox.plaid.com",
-                "development": "development.plaid.com",
-                "production": "production.plaid.com"}
-
 app = Flask(__name__, static_folder="static", template_folder="templates")
 
 
@@ -258,34 +188,12 @@ def _yahoo_quote(symbol):
 def fetch_quote(symbol):
     """Return a dict, or None.
 
-    52-week range: YES, there is a public-API way. Yahoo's chart meta
-    carries fiftyTwoWeekLow / fiftyTwoWeekHigh directly, so no separate
-    endpoint is needed. Finnhub's quote endpoint does not include it
-    (or a day range), so with a Finnhub key Yahoo is still consulted
-    best-effort to fill day/week ranges, and the detail view falls back
-    to the min/max of the 1-year history (see symbol_detail).
+    52-week range: Yahoo's chart meta carries fiftyTwoWeekLow /
+    fiftyTwoWeekHigh directly, so no separate endpoint is needed;
+    the detail view falls back to the min/max of the 1-year history
+    when a quote does not supply a range (see symbol_detail).
     """
     symbol = symbol.upper()
-    if FINNHUB_KEY:
-        try:
-            q = _http_json(
-                f"https://finnhub.io/api/v1/quote?symbol={symbol}&token={FINNHUB_KEY}"
-            )
-            if q.get("c"):
-                out = {"price": q["c"], "change": q.get("d"),
-                       "change_pct": q.get("dp"), "volume": None,
-                       "provider": "finnhub", "week_low": None, "week_high": None,
-                       "day_low": None, "day_high": None}
-                try:
-                    y = _yahoo_quote(symbol)
-                    if y:
-                        out.update({k: y[k] for k in
-                                    ("week_low", "week_high", "day_low", "day_high")})
-                except Exception:
-                    pass
-                return out
-        except Exception:
-            pass  # fall through to Yahoo
     try:
         return _yahoo_quote(symbol)
     except Exception:
@@ -572,14 +480,14 @@ def dashboard():
     for h in holdings:
         quote = quotes.get(h["symbol"])
         price = quote["price"] if quote and quote["price"] else h["manual_price"]
-        # 2026-10-26 Plaid gain/loss 0.0 bug: the old code fell back to
+        # 2026-10-26 gain/loss 0.0 bug: the old code fell back to
         # price = cost per share when no quote and no manual price
         # existed, so value always equalled cost and gain was always
         # exactly 0.00 — a fake number, not a real flat holding. A
         # holding with no price now has price/value/gain = None, is
         # excluded from totals, and is listed in unpriced (the UI
         # renders None as "—", never as $0.00). This is the common
-        # Plaid case: an institution that reports no institution_price
+        # case: an import that reports no price
         # (and Yahoo has no quote for the symbol), or a holding whose
         # quote fetch failed. Its cost basis is still shown, so the
         # user can see what is known and what is missing.
@@ -668,7 +576,7 @@ def _watch_flags(holdings, total_value):
                 "detail": "No quote and no imported/institution price, so its "
                           "value and gain/loss are shown as —, not $0.00, "
                           "and it is excluded from totals. Refresh quotes, "
-                          "or check the Plaid sync result for a missing price."})
+                          "or check the import for a missing price."})
     if not total_value or total_value <= 0:
         return flags
     by_symbol = {}
@@ -804,7 +712,7 @@ def symbol_detail(symbol):
                            (symbol.upper(),)).fetchone())
     history = fetch_history(symbol)
     # Fallback 52-week range from the 1-year history when the quote
-    # provider did not supply one (e.g. Finnhub).
+    # provider did not supply one.
     week_low = week_high = None
     day_low = day_high = None
     if quote:
@@ -1146,7 +1054,7 @@ def refresh_quotes():
         db.rollback()
         return jsonify({"error": "database busy, please try Refresh again"}), 503
     return jsonify({"refreshed": refreshed, "failed": failed,
-                    "provider": "finnhub" if FINNHUB_KEY else "yahoo-delayed"})
+                    "provider": "yahoo-delayed"})
 
 
 # ------------------------------------------------------- export / backup
@@ -1199,10 +1107,7 @@ def export_holdings():
 def backup_db():
     """One-click SQLite backup download (online backup API, so it is
     consistent even while the server is running). The download is the
-    fin_dash database ONLY: Plaid access tokens live in the separate
-    plaid_tokens.json file and are deliberately not in this file —
-    back that file up separately if you use Plaid, and never commit
-    either file to the repo."""
+    fin_dash database ONLY."""
     import sqlite3 as _sqlite3
     import tempfile
     tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
@@ -1219,7 +1124,6 @@ def backup_db():
         # The database is small (personal holdings), so read it into
         # memory and delete the temp file immediately — no temp files
         # accumulate, and the download still contains only holdings
-        # (Plaid tokens are not in the database).
         with open(tmp_path, "rb") as f:
             data = f.read()
     finally:
@@ -1230,239 +1134,6 @@ def backup_db():
     return Response(data, mimetype="application/x-sqlite3",
                     headers={"Content-Disposition":
                              "attachment; filename=fin_dash_backup.db"})
-
-
-# ------------------------------------------------------------------- Plaid
-# Self-hosted Plaid sync. This is NOT Muse's Plaid connector: Muse's
-# credentials do not transfer to a Mac, so the Mac app needs its own
-# Plaid developer account. Start in sandbox (PLAID_ENV=sandbox, free
-# test institutions, no real money), then switch to development /
-# production only after sandbox works. Set PLAID_CLIENT_ID and
-# PLAID_SECRET in a local .env (gitignored, never in the repo) and
-# restart the server. No dashboard login is added by this feature:
-# Plaid Link itself is the authentication step for the brokerage.
-def _plaid_configured():
-    return bool(PLAID_CLIENT_ID and PLAID_SECRET)
-
-
-def _plaid_post(path, body):
-    host = _PLAID_HOSTS.get(PLAID_ENV)
-    if not host:
-        raise ValueError(f"unknown PLAID_ENV {PLAID_ENV!r}")
-    payload = dict(body)
-    payload.update({"client_id": PLAID_CLIENT_ID, "secret": PLAID_SECRET})
-    req = urllib.request.Request(
-        f"https://{host}{path}",
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        return json.loads(resp.read().decode("utf-8"))
-
-
-def _load_plaid_tokens():
-    try:
-        with open(PLAID_TOKENS_PATH, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return data if isinstance(data, list) else []
-    except (OSError, ValueError):
-        return []
-
-
-def _save_plaid_tokens(items):
-    with open(PLAID_TOKENS_PATH, "w", encoding="utf-8") as f:
-        json.dump(items, f, indent=2)
-    try:
-        os.chmod(PLAID_TOKENS_PATH, 0o600)
-    except OSError:
-        pass
-
-
-def _plaid_holdings_to_rows(plaid):
-    """Pure mapping, unit-testable without Plaid credentials.
-
-    Plaid's investments/holdings/get returns holdings (quantity +
-    cost_basis + institution_price, keyed by security_id / account_id)
-    plus securities (security_id -> ticker) and accounts (account_id
-    -> name). Plaid's cost_basis is a TOTAL cost (confirmed against
-    Plaid's Holding docs: 'the total amount spent to acquire all
-    assets currently in the holding'), so import_rows (which stores
-    cost per share) receives it as cost_basis_total and divides by
-    quantity there. cost_basis is nullable in Plaid — an institution
-    that does not report it yields a 0 cost in fin_dash, flagged in
-    missing_cost, not silently treated as a real 0.
-    institution_price is per share; when it is null but
-    institution_value is present, price is derived as
-    institution_value / quantity, so the holding is not left
-    unpriced for no reason. Holdings with no ticker (e.g. cash-like
-    entries) are skipped, like cash rows in CSV imports, and are
-    reported in skipped_details instead of vanishing silently.
-    Two Plaid holdings with the same ticker in the same account
-    (e.g. two share classes / lots) are aggregated — quantity and
-    cost summed — instead of the second overwriting the first on
-    fin_dash's UNIQUE(account, symbol) rule.
-    Returns (rows, skipped, skipped_details, missing_cost, missing_price)."""
-    securities = {s.get("security_id"): s for s in plaid.get("securities", [])}
-    accounts = {a.get("account_id"): a for a in plaid.get("accounts", [])}
-    agg = {}
-    skipped = 0
-    skipped_details, missing_cost, missing_price = [], [], []
-    for h in plaid.get("holdings", []):
-        sec = securities.get(h.get("security_id")) or {}
-        symbol = (sec.get("ticker_symbol") or "").strip().upper()
-        qty = h.get("quantity")
-        acct = accounts.get(h.get("account_id")) or {}
-        acct_name = acct.get("name") or "Plaid account"
-        if not symbol or qty in (None, 0):
-            skipped += 1
-            skipped_details.append(
-                f"{sec.get('name') or h.get('security_id') or 'holding'} "
-                f"in {acct_name}: "
-                f"{'no ticker' if not symbol else 'zero/missing quantity'}")
-            continue
-        price = h.get("institution_price")
-        if price is None and h.get("institution_value") is not None and qty:
-            price = h["institution_value"] / qty
-        cost = h.get("cost_basis")
-        if cost is None and symbol not in missing_cost:
-            missing_cost.append(symbol)
-        if price is None and symbol not in missing_price:
-            missing_price.append(symbol)
-        key = (acct_name, symbol)
-        if key not in agg:
-            agg[key] = {
-                "account_name": acct_name, "symbol": symbol,
-                "description": sec.get("name") or "",
-                "quantity": 0.0, "last_price": price,
-                "cost_basis_total": 0.0, "_cost_seen": False,
-            }
-        a = agg[key]
-        a["quantity"] += qty
-        if cost is not None:
-            a["cost_basis_total"] += cost
-            a["_cost_seen"] = True
-        if a["last_price"] is None:
-            a["last_price"] = price
-        if not a["description"]:
-            a["description"] = sec.get("name") or ""
-    rows = []
-    for a in agg.values():
-        rows.append({
-            "account_name": a["account_name"], "symbol": a["symbol"],
-            "description": a["description"], "quantity": a["quantity"],
-            "last_price": a["last_price"],
-            "cost_basis_total": a["cost_basis_total"] if a["_cost_seen"] else None,
-        })
-    return rows, skipped, skipped_details, missing_cost, missing_price
-
-
-@app.route("/api/plaid/status")
-def plaid_status():
-    items = _load_plaid_tokens()
-    return jsonify({
-        "configured": _plaid_configured(), "env": PLAID_ENV,
-        "institutions": [i.get("institution") for i in items],
-        "token_count": len(items),
-        "last_sync": [i.get("last_sync") for i in items],
-    })
-
-
-@app.route("/api/plaid/link-token", methods=["POST"])
-def plaid_link_token():
-    if not _plaid_configured():
-        return jsonify({"error":
-            "Plaid is not configured. Set PLAID_CLIENT_ID and PLAID_SECRET "
-            "in a local .env (start with PLAID_ENV=sandbox), restart the "
-            "server, and try again. See README for the setup steps."}), 400
-    try:
-        out = _plaid_post("/link/token/create", {
-            "user": {"client_user_id": "fin_dash"},
-            "client_name": "fin_dash",
-            "products": ["investments"],
-            "country_codes": ["US"],
-            "language": "en",
-        })
-    except Exception as e:
-        return jsonify({"error": f"Plaid link-token failed: {e}"}), 502
-    return jsonify({"link_token": out.get("link_token")})
-
-
-@app.route("/api/plaid/exchange", methods=["POST"])
-def plaid_exchange():
-    body = request.json or {}
-    public_token = body.get("public_token")
-    if not public_token:
-        return jsonify({"error": "public_token is required"}), 400
-    if not _plaid_configured():
-        return jsonify({"error": "Plaid is not configured"}), 400
-    try:
-        out = _plaid_post("/item/public_token/exchange",
-                          {"public_token": public_token})
-    except Exception as e:
-        return jsonify({"error": f"Plaid exchange failed: {e}"}), 502
-    items = _load_plaid_tokens()
-    item_id = out.get("item_id")
-    items = [i for i in items if i.get("item_id") != item_id]
-    items.append({
-        "item_id": item_id,
-        "access_token": out.get("access_token"),
-        "institution": body.get("institution_name") or "Plaid institution",
-        "last_sync": None,
-    })
-    _save_plaid_tokens(items)
-    return jsonify({"ok": True, "institution": items[-1]["institution"]})
-
-
-@app.route("/api/plaid/sync", methods=["POST"])
-def plaid_sync():
-    """Pull holdings for every linked institution and merge them into
-    fin_dash accounts named '<Institution> — <Account> (Plaid)'.
-    Re-syncing updates the same account + symbol instead of
-    duplicating it (same merge rule as CSV re-import). Do NOT also
-    CSV-import the same brokerage into a different account name, or
-    the same holding will appear twice under two accounts."""
-    body = request.json or {}
-    owner_id = body.get("owner_id")
-    if not owner_id:
-        return jsonify({"error": "owner_id is required"}), 400
-    items = _load_plaid_tokens()
-    if not items:
-        return jsonify({"error":
-            "No Plaid institution is linked yet. Connect one first."}), 400
-    total_created = total_updated = total_skipped = 0
-    errors = []
-    skipped_details, missing_cost, missing_price = [], [], []
-    for item in items:
-        try:
-            plaid = _plaid_post("/investments/holdings/get",
-                                {"access_token": item["access_token"]})
-        except Exception as e:
-            errors.append(f"{item.get('institution')}: {e}")
-            continue
-        rows, skipped, details, m_cost, m_price = _plaid_holdings_to_rows(plaid)
-        total_skipped += skipped
-        skipped_details.extend(details)
-        for s in m_cost:
-            if s not in missing_cost:
-                missing_cost.append(s)
-        for s in m_price:
-            if s not in missing_price:
-                missing_price.append(s)
-        by_account = {}
-        for r in rows:
-            by_account.setdefault(r["account_name"], []).append(r)
-        for acct_name, acct_rows in by_account.items():
-            full_name = f"{item.get('institution')} — {acct_name} (Plaid)"
-            result = import_rows(acct_rows, int(owner_id), full_name)
-            total_created += result["created"]
-            total_updated += result["updated"]
-            total_skipped += result["skipped"]
-        item["last_sync"] = datetime.now(timezone.utc).isoformat()
-    _save_plaid_tokens(items)
-    return jsonify({"created": total_created, "updated": total_updated,
-                    "skipped": total_skipped, "errors": errors,
-                    "skipped_details": skipped_details,
-                    "missing_cost": missing_cost,
-                    "missing_price": missing_price})
 
 
 if __name__ == "__main__":

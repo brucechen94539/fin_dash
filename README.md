@@ -23,8 +23,7 @@ banners.
 **52-week range: yes, via API.** Yahoo's chart meta returns
 `fiftyTwoWeekLow` / `fiftyTwoWeekHigh` directly, and fin_dash stores them
 on refresh, rendering the range bar with the current price as a diamond
-marker. With a Finnhub key (whose quote endpoint has no 52-week field),
-the detail view falls back to the min/max of the 1-year history. Without
+marker. The detail view falls back to the min/max of the 1-year history. Without
 any quote, the cell shows a dash — never an invented range.
 
 ## Brokerage CSV import — automatic conversion to Fidelity format
@@ -135,81 +134,14 @@ normalised before matching.
    duplicate it. Try `sample_holdings.csv` first.
 2. **Manual entry** — add an account and holding from the dashboard.
 3. **Market-data pull** — quotes and price + volume history:
-   - With `FINNHUB_API_KEY` set: Finnhub quotes (free plan may be delayed).
-   - Without it: Yahoo Finance chart data, free, no key, but unofficial and
+   - Yahoo Finance chart data, free, no key, but unofficial and
      personal-use only — it can change or rate-limit without notice, so it
-     is a fallback for a personal dashboard, not a production data contract.
+     is suitable for a personal dashboard, not a production data contract.
      Stooq is a further fallback, but it currently bot-blocks server requests.
      The UI labels the provider and as-of time so a delayed price is never
-     shown as live.
+     shown as live. No API key, no .env file, and no brokerage login
+     are used by this app.
    - If no provider is reachable, the imported/manual price is used.
-
-## Plaid sync (self-hosted, no dashboard login)
-
-Plaid sync is now in this self-hosted version, with its own Plaid
-developer account — Muse's Plaid connection does **not** transfer to
-your Mac, and no dashboard login is added (Plaid Link itself is the
-brokerage authentication step):
-
-1. Create a Plaid developer account at dashboard.plaid.com and create
-   an app. Start in **sandbox** — free test institutions, no real money.
-2. Copy `.env.example` to `.env` in the same folder as `app.py`
-   (gitignored) and set `PLAID_CLIENT_ID`, `PLAID_SECRET`, and
-   `PLAID_ENV=sandbox`, then run `chmod 600 .env` and restart the
-   server. **app.py loads `.env` itself on startup** (a small stdlib
-   parser, no new dependency, no pip install needed) — no `export`
-   is needed, and a variable already exported in your shell always
-   wins over `.env`. A `.env` in your home folder (`~`) is NOT read;
-   it must sit next to `app.py`.
-3. In the dashboard's Plaid panel, pick an owner, click **Connect
-   brokerage via Plaid**, complete Link (in sandbox, use Plaid's test
-   credentials), then click **Sync Plaid holdings**.
-4. Sync creates accounts named “Institution — Account (Plaid)” and
-   merges on account + symbol, so re-syncing updates instead of
-   duplicating. Do **not** also CSV-import the same brokerage under a
-   different account name, or the holding will appear twice.
-5. Only move to `PLAID_ENV=development` (up to 100 real items, free)
-   or `production` (paid, requires Plaid approval) after sandbox works.
-
-Plaid cost basis is treated as a **total** cost (divided by quantity
-for storage, like Fidelity's Cost Basis Total — confirmed against
-Plaid's Holding docs, where cost_basis is 'the total amount spent to
-acquire all assets currently in the holding'). Plaid's cost_basis is
-nullable, so an institution that does not report it imports as 0 cost
-and is listed in the sync result as 'Missing cost basis' (and flagged
-by What to watch), not silently treated as a real 0. Likewise,
-institution_price is per share; when it is null but institution_value
-is present, the import derives price as institution_value / quantity.
-Holdings with no ticker are skipped and listed in the sync result
-('Skipped: …'), and two Plaid holdings with the same ticker in the
-same account are aggregated (quantity and cost summed) instead of the
-second overwriting the first. Access tokens are
-stored in the local `plaid_tokens.json` file (gitignored, mode 0600),
-**not** in the database and **not** in the repo — so a database
-backup does not back them up; copy that file separately if you need
-it. Do not put brokerage credentials, API keys, or real exports in
-this repo.
-
-## Holdings grouping, expand/collapse, and unpriced holdings
-
-Holdings stay grouped by account (brokerage account), with a per-account
-total row — grouping is not flattened by sorting: column sorting applies
-within each group, and groups stay ordered by owner then account name.
-Each group header is a toggle (▾/▸) that expands or collapses that
-account; collapsed groups still show their account total in the header.
-Collapsed state is remembered in the browser (`localStorage`, key
-`fin_dash_collapsed`), so it survives reloads and owner-tab switches.
-**Expand all** / **Collapse all** sit next to Refresh quotes.
-
-A holding with no price — no quote, no imported price, and (for Plaid)
-no institution price or value to derive one from — is **not** shown as
-$0.00 gain. Its Last price, Current value, Today's gain, and Total
-gain show as —, it is excluded from portfolio and account totals, and
-it is listed under the holdings table ('X holdings have no price yet')
-and in What to watch ('No price: SYM'). The old behaviour fell back to
-price = cost per share, which made value always equal cost and gain
-always exactly 0.00 — a fake flat holding. Money values that are
-missing (null) now render as — everywhere, not $0.00.
 
 ## PWA / Add to Home Screen (iPhone, no login)
 
@@ -230,7 +162,7 @@ full-screen behaviour still works.
 - **Download backup** (`GET /api/backup`) downloads the whole SQLite
   database via the online backup API, so it is consistent while the
   server is running. It contains holdings, accounts, quotes, and the
-  history cache — but **not** Plaid tokens (see above).
+  history cache.
 
 ## History cache (faster loads)
 
@@ -273,13 +205,11 @@ Data is stored in `fin_dash.db` (SQLite, gitignored, created on first run).
 - `POST /api/refresh` — refresh all cached quotes
 - `POST /api/owners/<id>/rename`
 - `GET /api/export?owner=all|<id>` — holdings CSV download
-- `GET /api/backup` — SQLite database download (no Plaid tokens)
-- `GET /api/plaid/status`, `POST /api/plaid/link-token`, `POST /api/plaid/exchange`, `POST /api/plaid/sync` — Plaid Link + Investments holdings sync (needs `PLAID_CLIENT_ID` / `PLAID_SECRET` in a local `.env`)
+- `GET /api/backup` — SQLite database download
 
 ## What is not here
 
-No buy, sell, or order code, and no dashboard login. The only
-brokerage-authentication code is Plaid Link, which is read-only
-(holdings only) and is the brokerages' own login flow. Rule-based
+No buy, sell, or order code, no dashboard login, and no
+brokerage-authentication code at all. Rule-based
 observations (concentration, allocation) are not personalised
 investment advice, and no returns are promised.
