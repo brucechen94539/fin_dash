@@ -37,6 +37,12 @@ input, select { padding: 8px; border: 1px solid #cbd3df; border-radius: 8px; }
 .group-toggle { padding: 2px 8px; font-size: 14px; line-height: 1; }
 .total-row td { border-top: 2px solid #1c2333; font-weight: 600; background: #fafbfc; }
 .holding-row { cursor: pointer; } .holding-row:hover { background: #eef6ff; }
+/* Inline chart row: inserted directly after the holding it belongs
+   to (under its phone card on narrow screens), replacing the old
+   separate detail panel at the bottom of the page. */
+.detail-row td { background: #f8fafc; padding: 12px; white-space: normal; max-width: none; }
+.detail-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 8px; }
+.detail-chart { width: 100%; height: auto; }
 .symbol-col { width: 72px; white-space: normal; overflow-wrap: break-word; }
 .symbol-col strong { cursor: help; }
 .range { min-width: 0; max-width: 16ch; }
@@ -73,6 +79,10 @@ input, select { padding: 8px; border: 1px solid #cbd3df; border-radius: 8px; }
      cards: their cells have no data-label, so they render as blocks
      and empty cells are hidden instead of leaving blank lines. */
   #holdings tr.group-header, #holdings tr.total-row { display: block; }
+  /* The inline chart sits under its card as its own block, not
+     squeezed into the card's label/value rows. */
+  #holdings tr.detail-row { display: block; border: 1px solid #e2e8f0; border-radius: 12px; margin: -4px 0 12px; padding: 8px; }
+  #holdings tr.detail-row td { display: block; max-width: none; width: 100%; border-bottom: none; }
   #holdings tr.group-header td, #holdings tr.total-row td {
     display: block; max-width: none; width: 100%;
   }

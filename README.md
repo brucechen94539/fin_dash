@@ -175,7 +175,10 @@ first load of a day still fetches fresh history, like quotes.
 
 ## Symbol detail: beta and market cap
 
-Clicking a holding shows its price + volume chart, day/52-week
+Clicking a holding expands its price + volume chart right under
+that holding (on a phone, right under its card) — there is no
+separate chart panel at the bottom of the page; clicking the row
+again closes it. It also shows day/52-week
 ranges, and — best-effort, from Nasdaq's public quote summary
 (no key) — **beta and market cap**, plus sector/industry when
 Nasdaq publishes them. Yahoo's quote endpoints now return 401

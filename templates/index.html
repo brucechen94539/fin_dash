@@ -58,7 +58,7 @@
     <tbody></tbody>
     <tfoot></tfoot>
   </table></div>
-  <p id="detail-hint">Click a holding row for its price + volume chart. Last price is refreshed from the market-data API on the first dashboard load of the day (intraday price while the market is open, the close once it has closed; free tiers are delayed, not real-time) — it is not the price frozen in your import file. Day range and 52-week range come from the same API pull (Yahoo regularMarketDayLow/High and fiftyTwoWeekLow/High); without a quote they show as a dash, not an estimate.</p>
+  <p id="detail-hint">Click a holding row for its price + volume chart, shown right under that holding (on a phone, right under its card) — not in a separate panel at the bottom. Click the row again to close it. Last price is refreshed from the market-data API on the first dashboard load of the day (intraday price while the market is open, the close once it has closed; free tiers are delayed, not real-time) — it is not the price frozen in your import file. Day range and 52-week range come from the same API pull (Yahoo regularMarketDayLow/High and fiftyTwoWeekLow/High); without a quote they show as a dash, not an estimate.</p>
   <p class="small">Formulas: Total gain/loss = Current value − Cost basis (total, i.e. cost per share × quantity). Today's gain/loss = (Last price − Previous close) × Quantity. Gains are green, losses are red.</p>
 </section>
 
@@ -89,12 +89,6 @@
   <h2>What to watch</h2>
   <p class="small">Rule-based observations only — not investment advice, and not a buy or sell recommendation.</p>
   <ul id="watch-list"></ul>
-</section>
-
-<section class="panel" id="detail" hidden>
-  <h2 id="detail-title"></h2>
-  <canvas id="chart" width="900" height="300"></canvas>
-  <p id="detail-meta"></p>
 </section>
 
 <section class="panel">

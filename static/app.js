@@ -14,6 +14,13 @@ let owners = [];
 let lastData = null;
 let sortKey = "symbol";
 let sortDir = 1;
+// Inline chart: which holding's price + volume chart is open, and
+// where it lives — a detail row inserted directly after that holding's
+// row (on a phone, directly under its card), not a panel at the bottom.
+// The holding id (not just the symbol) identifies the row, because the
+// same symbol can appear in several accounts.
+let expandedHoldingId = null;
+let expandedSymbol = null;
 
 const $ = (s) => document.querySelector(s);
 // Value masking (eye toggle): when on, every dollar amount rendered
@@ -77,7 +84,7 @@ function holdingRow(h) {
   // data-label on every cell drives the phone card layout (see
   // style.css @media): on a narrow screen each row becomes a card
   // with the column name shown before its value.
-  return `<tr data-symbol="${h.symbol}" class="holding-row">
+  return `<tr data-symbol="${h.symbol}" data-id="${h.id}" class="holding-row">
     <td class="symbol-col" data-label="Symbol"><strong title="${escAttr(h.name)}">${h.symbol}</strong></td>
     <td class="num" data-label="Last price">${money(h.price)}<span class="sub-line ${h.last_change == null ? "" : cls(h.last_change)}">${moneySigned(h.last_change)} ${h.last_change_pct == null ? "—" : pct(h.last_change_pct)}</span></td>
     <td class="num ${h.today_gain == null ? "" : cls(h.today_gain)}" data-label="Today's gain/loss">${moneySigned(h.today_gain)}<span class="sub-line">${h.today_gain_pct == null ? "—" : pct(h.today_gain_pct)}</span></td>
@@ -142,7 +149,14 @@ function renderHoldings() {
       (collapsed ? ` <span class="small">(${rows.length} holding${rows.length === 1 ? "" : "s"} — collapsed)</span>` : "") +
       `</td></tr>`;
     if (!collapsed) {
-      html += rows.map(holdingRow).join("");
+      html += rows.map((h) => holdingRow(h) +
+        (String(h.id) === String(expandedHoldingId)
+          ? `<tr class="detail-row" data-detail-for="${h.id}"><td colspan="11">` +
+            `<div class="detail-head"><strong>${h.symbol} — price + volume</strong>` +
+            `<button data-close-detail>Close</button></div>` +
+            `<canvas class="detail-chart" width="900" height="300"></canvas>` +
+            `<p class="detail-meta small">Loading chart…</p></td></tr>`
+          : "")).join("");
       html += totalRow("Account total", tt, tg, tv);
     }
   }
@@ -164,7 +178,26 @@ function renderHoldings() {
       renderHoldings();
     }));
   document.querySelectorAll("#holdings tbody tr.holding-row").forEach((tr) =>
-    tr.addEventListener("click", (e) => { if (!e.target.dataset.del) showDetail(tr.dataset.symbol); }));
+    tr.addEventListener("click", (e) => {
+      if (e.target.dataset.del) return;
+      // Toggle: clicking the open row closes its chart; clicking
+      // another row moves the chart under that row.
+      if (String(tr.dataset.id) === String(expandedHoldingId)) {
+        expandedHoldingId = null; expandedSymbol = null;
+      } else {
+        expandedHoldingId = tr.dataset.id; expandedSymbol = tr.dataset.symbol;
+      }
+      renderHoldings();
+    }));
+  document.querySelectorAll("[data-close-detail]").forEach((b) =>
+    b.addEventListener("click", () => {
+      expandedHoldingId = null; expandedSymbol = null;
+      renderHoldings();
+    }));
+  // If a chart is open, fill the detail row that renderHoldings just
+  // inserted (this re-runs after sort / mask / group changes, so the
+  // chart follows the row instead of being lost on re-render).
+  if (expandedHoldingId && expandedSymbol) fillDetail(expandedHoldingId, expandedSymbol);
   document.querySelectorAll("[data-del]").forEach((b) =>
     b.addEventListener("click", async () => { await fetch(`/api/holdings/${b.dataset.del}`, {method: "DELETE"}); load(); }));
   document.querySelectorAll("#holdings thead th[data-sort]").forEach((th) => {
@@ -304,8 +337,8 @@ function fillSelects() {
   }
 }
 
-function drawChart(history) {
-  const c = $("#chart"), ctx = c.getContext("2d");
+function drawChart(history, canvas) {
+  const c = canvas, ctx = c.getContext("2d");
   ctx.clearRect(0, 0, c.width, c.height);
   if (!history.length) { ctx.fillText("No price history available for this symbol.", 20, 30); return; }
   const closes = history.map((h) => h.close), vols = history.map((h) => h.volume);
@@ -329,10 +362,16 @@ function drawChart(history) {
   ctx.fillText(`${history[0].date} → ${history[history.length - 1].date}  •  ${minMax}`, pad, 18);
 }
 
-async function showDetail(symbol) {
+async function fillDetail(holdingId, symbol) {
+  // Draw into the detail row under this holding, not a bottom panel.
+  // Bail out if a re-render has since closed or moved the chart, so a
+  // slow fetch cannot paint into a row that is no longer open.
+  const row = document.querySelector(`tr.detail-row[data-detail-for="${holdingId}"]`);
+  if (!row) return;
+  const canvas = row.querySelector(".detail-chart");
+  const meta = row.querySelector(".detail-meta");
   const d = await (await fetch(`/api/symbol/${symbol}`)).json();
-  $("#detail").hidden = false;
-  $("#detail-title").textContent = symbol;
+  if (String(holdingId) !== String(expandedHoldingId)) return;
   const range = (d.week_low != null && d.week_high != null)
     ? ` • 52-week range ${money(d.week_low)} – ${money(d.week_high)}` : "";
   const day = (d.day_low != null && d.day_high != null)
@@ -344,10 +383,10 @@ async function showDetail(symbol) {
   const beta = (d.beta != null) ? ` • Beta ${d.beta.toFixed(2)}` : "";
   const mcap = (d.market_cap != null) ? ` • Market cap ${money(d.market_cap)}` : "";
   const sector = d.sector ? ` • ${d.sector}${d.industry ? ` — ${d.industry}` : ""}` : "";
-  $("#detail-meta").textContent = d.quote
+  meta.textContent = d.quote
     ? `Last quote ${money(d.quote.price)} via ${d.quote.provider} at ${d.quote.as_of || "unknown"}${day}${range}${beta}${mcap}${sector}`
     : "No cached quote yet — click Refresh quotes.";
-  drawChart(d.history);
+  drawChart(d.history, canvas);
 }
 
 // Expand / collapse all account groups (persisted like single toggles).
