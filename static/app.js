@@ -17,6 +17,7 @@ const moneySigned = (n) => (n < 0 ? "-$" : "+$") + Math.abs(n || 0).toLocaleStri
 const pct = (n) => `${n < 0 ? "" : "+"}${(n || 0).toFixed(2)}%`;
 const cls = (n) => (n < 0 ? "neg" : "pos");
 const num = (n) => (n || 0).toLocaleString(undefined, {maximumFractionDigits: 3});
+const escAttr = (s) => String(s || "").replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
 
 function rangeCell(h) {
   if (h.week_low == null || h.week_high == null || h.week_position == null) return "—";
@@ -26,8 +27,10 @@ function rangeCell(h) {
 }
 
 function holdingRow(h) {
+  // Full company name is a hover tooltip only, not a second line — the
+  // ticker column stays narrow (tickers are at most ~4-5 characters).
   return `<tr data-symbol="${h.symbol}" class="holding-row">
-    <td><strong>${h.symbol}</strong><span class="sub-line">${h.name || ""}</span></td>
+    <td class="symbol-col"><strong title="${escAttr(h.name)}">${h.symbol}</strong></td>
     <td class="num">${money(h.price)}<span class="sub-line ${cls(h.last_change)}">${moneySigned(h.last_change)} ${pct(h.last_change_pct)}</span></td>
     <td class="num ${cls(h.today_gain)}">${moneySigned(h.today_gain)}<span class="sub-line">${pct(h.today_gain_pct)}</span></td>
     <td class="num ${cls(h.total_gain)}">${moneySigned(h.total_gain)}<span class="sub-line">${pct(h.total_gain_pct)}</span></td>

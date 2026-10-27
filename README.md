@@ -24,6 +24,23 @@ marker. With a Finnhub key (whose quote endpoint has no 52-week field),
 the detail view falls back to the min/max of the 1-year history. Without
 any quote, the cell shows a dash — never an invented range.
 
+## Fidelity CSV import (cost basis mapping)
+
+Fidelity's export uses two different cost columns — mixing them up is
+what produced 0.00 cost bases:
+
+- **Cost Basis Total** = the *total* cost for the position
+- **Average Cost Basis** = the *per-share* cost
+
+fin_dash stores cost basis per share internally, so on import it
+divides Cost Basis Total by Quantity, or uses Average Cost Basis
+directly if no total is present. Re-importing the same Fidelity file
+after this fix updates the existing holdings (same account + symbol)
+instead of duplicating them, so a bad 0.00 import is corrected by
+re-importing. See `sample_fidelity.csv` for the exact header format.
+Headers with units/punctuation (e.g. `Cost Basis Total ($)`) are
+normalised before matching.
+
 ## Data in (hybrid)
 
 1. **CSV / XLSX import** — upload a brokerage export. Flexible headers:

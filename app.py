@@ -32,6 +32,7 @@ import csv
 import io
 import json
 import os
+import re
 import sqlite3
 import urllib.request
 import urllib.error
@@ -394,7 +395,24 @@ def delete_holding(holding_id):
 
 
 def _norm_header(h):
-    return (h or "").strip().lower().replace(" ", "_").replace("-", "_")
+    """'Cost Basis Total ($)' -> 'cost_basis_total', so Fidelity headers
+    (and other brokerages' variants with units/punctuation) match."""
+    h = (h or "").strip().lower().replace(" ", "_").replace("-", "_")
+    return re.sub(r"[^a-z0-9_]", "", h)
+
+
+def _money(v):
+    """'$1,234.56' / '($1,234.56)' / 1234.56 -> float, else None."""
+    if v is None or v == "":
+        return None
+    s = str(v).strip().replace("$", "").replace(",", "")
+    negative = s.startswith("(") and s.endswith(")")
+    s = s.strip("()")
+    try:
+        val = float(s)
+    except ValueError:
+        return None
+    return -val if negative else val
 
 
 def _pick(row_dict, *names):
@@ -423,13 +441,36 @@ def import_rows(rows, owner_id, account_name):
         if not symbol or shares is None:
             skipped += 1
             continue
+        # Fidelity CSV mapping — this was the 0.0 bug: the old code looked
+        # for a bare 'cost_basis' header, which Fidelity does not use, so
+        # every imported row fell back to 0.
+        #   'Cost Basis Total'   -> TOTAL cost (cost_basis_total)
+        #   'Average Cost Basis' -> PER-SHARE cost (average_cost_basis)
+        # The holdings table stores cost_basis PER SHARE, and computes
+        # Cost basis (total) = cost_basis * quantity, so a total must be
+        # divided by quantity here, never stored as-is.
         try:
-            shares = float(str(shares).replace(",", "").replace("$", ""))
-            cost = float(str(_pick(r, "cost_basis", "avg_cost", "average_cost",
-                                   "cost") or 0).replace(",", "").replace("$", ""))
-            price = _pick(r, "last_price", "price", "current_price")
-            price = float(str(price).replace(",", "").replace("$", "")) if price else None
-        except ValueError:
+            shares = _money(shares)
+            if shares is None:
+                skipped += 1
+                continue
+            cost_total_raw = _pick(r, "cost_basis_total", "total_cost_basis")
+            avg_raw = _pick(r, "average_cost_basis", "avg_cost_basis",
+                            "average_cost", "avg_cost",
+                            "cost_basis_per_share")
+            legacy_raw = _pick(r, "cost_basis", "cost")
+            if cost_total_raw is not None:
+                total = _money(cost_total_raw)
+                cost = (total / shares) if total is not None else 0
+            elif avg_raw is not None:
+                cost = _money(avg_raw) or 0
+            elif legacy_raw is not None:
+                # Legacy sample_holdings.csv: 'Cost Basis' is per-share.
+                cost = _money(legacy_raw) or 0
+            else:
+                cost = 0
+            price = _money(_pick(r, "last_price", "price", "current_price"))
+        except (ValueError, TypeError):
             skipped += 1
             continue
         if shares <= 0:
@@ -447,7 +488,8 @@ def import_rows(rows, owner_id, account_name):
                  cost_basis=excluded.cost_basis,
                  manual_price=excluded.manual_price, source=excluded.source""",
             (acct_id, str(symbol).strip().upper(),
-             _pick(r, "name", "description") or "", shares, cost, price,
+             _pick(r, "name", "description", "security_name",
+                   "company_name") or "", shares, cost, price,
              "csv" if price is None else "csv"))
         created, updated = (created, updated + 1) if existed else (created + 1, updated)
     db.commit()

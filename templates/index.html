@@ -23,7 +23,7 @@
   </div>
   <div class="table-wrap"><table id="holdings">
     <thead><tr>
-      <th data-sort="symbol" data-label="Symbol">Symbol</th>
+      <th class="symbol-col" data-sort="symbol" data-label="Symbol">Symbol</th>
       <th data-sort="price" data-label="Last price">Last price</th>
       <th data-sort="today_gain" data-label="Today's gain/loss">Today's gain/loss</th>
       <th data-sort="total_gain" data-label="Total gain/loss">Total gain/loss</th>
@@ -64,7 +64,7 @@
     <button type="submit">Import</button>
     <span id="import-result"></span>
   </form>
-  <p class="small">CSV columns accepted (flexible names): Symbol/Ticker, Shares/Quantity, Cost Basis/Avg Cost, Last Price/Price, Account, Name. Re-importing the same account + symbol updates it instead of duplicating it. See <a href="/static/sample_holdings.csv" download>sample_holdings.csv</a> for the format.</p>
+  <p class="small">CSV columns accepted (flexible names): Symbol/Ticker, Shares/Quantity, Cost Basis Total / Average Cost Basis (Fidelity), Cost Basis/Avg Cost, Last Price/Price, Account, Name/Description. Re-importing the same account + symbol updates it instead of duplicating it. See <a href="/static/sample_holdings.csv" download>sample_holdings.csv</a> or the Fidelity-format sample in the repo (<code>sample_fidelity.csv</code>) for the format.</p>
 </section>
 
 <script src="/static/app.js"></script>
