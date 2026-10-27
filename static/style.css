@@ -33,6 +33,8 @@ input, select { padding: 8px; border: 1px solid #cbd3df; border-radius: 8px; }
 .sub-line { display: block; color: #556; font-size: 12px; white-space: normal; overflow-wrap: break-word; }
 .pos { color: #0a7d33; } .neg { color: #c00; }
 .group-header td { background: #f1f5f9; font-weight: 600; padding: 10px 8px; }
+.group-header { cursor: pointer; }
+.group-toggle { padding: 2px 8px; font-size: 14px; line-height: 1; }
 .total-row td { border-top: 2px solid #1c2333; font-weight: 600; background: #fafbfc; }
 .holding-row { cursor: pointer; } .holding-row:hover { background: #eef6ff; }
 .symbol-col { width: 72px; white-space: normal; overflow-wrap: break-word; }

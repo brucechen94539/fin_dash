@@ -512,27 +512,42 @@ def dashboard():
             pass
     quotes = {r["symbol"]: row(r) for r in db.execute("SELECT * FROM quotes")}
     total_value = total_cost = day_move = 0.0
+    unpriced = []
     accounts = {}
     for h in holdings:
         quote = quotes.get(h["symbol"])
         price = quote["price"] if quote and quote["price"] else h["manual_price"]
-        if price is None:
-            price = h["cost_basis"] / h["shares"] if h["shares"] else 0
+        # 2026-10-26 Plaid gain/loss 0.0 bug: the old code fell back to
+        # price = cost per share when no quote and no manual price
+        # existed, so value always equalled cost and gain was always
+        # exactly 0.00 — a fake number, not a real flat holding. A
+        # holding with no price now has price/value/gain = None, is
+        # excluded from totals, and is listed in unpriced (the UI
+        # renders None as "—", never as $0.00). This is the common
+        # Plaid case: an institution that reports no institution_price
+        # (and Yahoo has no quote for the symbol), or a holding whose
+        # quote fetch failed. Its cost basis is still shown, so the
+        # user can see what is known and what is missing.
+        h["priced"] = price is not None
+        if not h["priced"]:
+            unpriced.append(h["symbol"])
         # Fidelity-style fields (see templates/index.html for the column order).
         h["price"] = price
         h["last_change"] = quote["change"] if quote else None
         h["last_change_pct"] = quote["change_pct"] if quote else None
-        h["value"] = price * h["shares"]
+        h["value"] = price * h["shares"] if price is not None else None
         h["current_value"] = h["value"]
-        h["gain"] = h["value"] - h["cost_basis"] * h["shares"]
+        h["gain"] = (h["value"] - h["cost_basis"] * h["shares"]
+                     if price is not None else None)
         h["total_gain"] = h["gain"]
         h["gain_pct"] = (h["gain"] / (h["cost_basis"] * h["shares"]) * 100
-                         if h["cost_basis"] and h["shares"] else 0)
+                         if h["gain"] is not None and h["cost_basis"]
+                         and h["shares"] else None)
         h["total_gain_pct"] = h["gain_pct"]
         h["day_move"] = (quote["change"] * h["shares"]
-                         if quote and quote["change"] is not None else 0)
+                         if quote and quote["change"] is not None else None)
         h["today_gain"] = h["day_move"]
-        h["today_gain_pct"] = quote["change_pct"] if quote else 0
+        h["today_gain_pct"] = quote["change_pct"] if quote else None
         h["quantity"] = h["shares"]
         h["cost_total"] = h["cost_basis"] * h["shares"]
         h["cost_per_share"] = h["cost_basis"]
@@ -540,28 +555,37 @@ def dashboard():
         h["week_high"] = quote["week_high"] if quote else None
         h["week_position"] = (
             (price - h["week_low"]) / (h["week_high"] - h["week_low"])
-            if h["week_low"] is not None and h["week_high"] is not None
+            if price is not None and h["week_low"] is not None
+            and h["week_high"] is not None
             and h["week_high"] > h["week_low"] else None)
         h["day_low"] = quote["day_low"] if quote else None
         h["day_high"] = quote["day_high"] if quote else None
         h["day_position"] = (
             (price - h["day_low"]) / (h["day_high"] - h["day_low"])
-            if h["day_low"] is not None and h["day_high"] is not None
+            if price is not None and h["day_low"] is not None
+            and h["day_high"] is not None
             and h["day_high"] > h["day_low"] else None)
         h["quote_provider"] = quote["provider"] if quote else "manual"
         h["quote_as_of"] = quote["as_of"] if quote else None
-        total_value += h["value"]
-        total_cost += h["cost_basis"] * h["shares"]
-        day_move += h["day_move"]
-        accounts.setdefault(h["account_name"], {"owner": h["owner_name"], "value": 0.0})
-        accounts[h["account_name"]]["value"] += h["value"]
+        # Totals cover priced holdings only: including an unpriced
+        # holding's cost (with no value) would understate gain by
+        # exactly that cost. Unpriced holdings are listed separately.
+        if h["priced"]:
+            total_value += h["value"]
+            total_cost += h["cost_basis"] * h["shares"]
+            day_move += h["day_move"] if h["day_move"] is not None else 0
+            accounts.setdefault(h["account_name"],
+                                {"owner": h["owner_name"], "value": 0.0})
+            accounts[h["account_name"]]["value"] += h["value"]
     for h in holdings:  # needs the total above, so a second pass
-        h["pct_of_account"] = (h["value"] / total_value * 100 if total_value else 0)
+        h["pct_of_account"] = (h["value"] / total_value * 100
+                               if h["priced"] and total_value else None)
     return jsonify({
         "owners": owners,
         "holdings": holdings,
         "watch": _watch_flags(holdings, total_value),
         "accounts": accounts,
+        "unpriced": unpriced,
         "totals": {
             "value": total_value, "cost": total_cost,
             "gain": total_value - total_cost,
@@ -579,6 +603,17 @@ def _watch_flags(holdings, total_value):
     and never a promised return. Every flag is computed from the
     holdings the dashboard already has, so it can be checked."""
     flags = []
+    # Unpriced holdings are flagged first, even when totals are 0:
+    # they are the holdings whose gain would otherwise read as 0.00.
+    for h in holdings:
+        if not h.get("priced"):
+            flags.append({
+                "level": "watch",
+                "title": f"No price: {h['symbol']}",
+                "detail": "No quote and no imported/institution price, so its "
+                          "value and gain/loss are shown as —, not $0.00, "
+                          "and it is excluded from totals. Refresh quotes, "
+                          "or check the Plaid sync result for a missing price."})
     if not total_value or total_value <= 0:
         return flags
     by_symbol = {}
@@ -586,9 +621,13 @@ def _watch_flags(holdings, total_value):
         by_symbol.setdefault(h["symbol"], []).append(h)
     # Concentration: a single symbol at 25%+ of portfolio value,
     # aggregated across accounts (a symbol held in two accounts is
-    # one concentration, not two).
+    # one concentration, not two). Unpriced rows carry value None
+    # and are skipped, not treated as 0.
     for sym, rows in by_symbol.items():
-        pct = sum(r["value"] for r in rows) / total_value * 100
+        priced_rows = [r for r in rows if r.get("value") is not None]
+        if not priced_rows:
+            continue
+        pct = sum(r["value"] for r in priced_rows) / total_value * 100
         if pct >= 25:
             flags.append({
                 "level": "watch",
@@ -611,7 +650,8 @@ def _watch_flags(holdings, total_value):
             "detail": "With fewer than 3 distinct symbols, one holding's move dominates."})
     # Large unrealised loss, and missing cost basis (gains overstated).
     for h in holdings:
-        if h["total_gain_pct"] <= -20:
+        if (h["total_gain_pct"] is not None
+                and h["total_gain_pct"] <= -20):
             flags.append({
                 "level": "watch",
                 "title": f"Large unrealised loss: {h['symbol']} {h['total_gain_pct']:.1f}%",
@@ -1083,12 +1123,16 @@ def export_holdings():
     for h in db.execute(q, params):
         quote = quotes.get(h["symbol"])
         price = quote["price"] if quote and quote["price"] else h["manual_price"]
-        if price is None:
-            price = h["cost_basis"] / h["shares"] if h["shares"] else 0
-        value = price * h["shares"]
+        # No fake price fallback here either (see dashboard): an
+        # unpriced holding exports blank price/value/gain, not a
+        # value equal to its cost with a 0 gain.
+        value = price * h["shares"] if price is not None else ""
         w.writerow([h["owner_name"], h["account_name"], h["symbol"], h["name"],
                     h["shares"], h["cost_basis"], h["cost_basis"] * h["shares"],
-                    price, value, value - h["cost_basis"] * h["shares"],
+                    price if price is not None else "",
+                    value,
+                    (value - h["cost_basis"] * h["shares"]
+                     if price is not None else ""),
                     (quote["change"] * h["shares"]
                      if quote and quote["change"] is not None else "")])
     return Response(buf.getvalue(), mimetype="text/csv",
@@ -1184,30 +1228,76 @@ def _plaid_holdings_to_rows(plaid):
     Plaid's investments/holdings/get returns holdings (quantity +
     cost_basis + institution_price, keyed by security_id / account_id)
     plus securities (security_id -> ticker) and accounts (account_id
-    -> name). Plaid's cost_basis is a TOTAL cost, so import_rows (which
-    stores cost per share) receives it as cost_basis_total and divides
-    by quantity there. Holdings with no ticker (e.g. cash-like entries)
-    are skipped, like cash rows in CSV imports."""
+    -> name). Plaid's cost_basis is a TOTAL cost (confirmed against
+    Plaid's Holding docs: 'the total amount spent to acquire all
+    assets currently in the holding'), so import_rows (which stores
+    cost per share) receives it as cost_basis_total and divides by
+    quantity there. cost_basis is nullable in Plaid — an institution
+    that does not report it yields a 0 cost in fin_dash, flagged in
+    missing_cost, not silently treated as a real 0.
+    institution_price is per share; when it is null but
+    institution_value is present, price is derived as
+    institution_value / quantity, so the holding is not left
+    unpriced for no reason. Holdings with no ticker (e.g. cash-like
+    entries) are skipped, like cash rows in CSV imports, and are
+    reported in skipped_details instead of vanishing silently.
+    Two Plaid holdings with the same ticker in the same account
+    (e.g. two share classes / lots) are aggregated — quantity and
+    cost summed — instead of the second overwriting the first on
+    fin_dash's UNIQUE(account, symbol) rule.
+    Returns (rows, skipped, skipped_details, missing_cost, missing_price)."""
     securities = {s.get("security_id"): s for s in plaid.get("securities", [])}
     accounts = {a.get("account_id"): a for a in plaid.get("accounts", [])}
-    rows, skipped = [], 0
+    agg = {}
+    skipped = 0
+    skipped_details, missing_cost, missing_price = [], [], []
     for h in plaid.get("holdings", []):
         sec = securities.get(h.get("security_id")) or {}
         symbol = (sec.get("ticker_symbol") or "").strip().upper()
         qty = h.get("quantity")
+        acct = accounts.get(h.get("account_id")) or {}
+        acct_name = acct.get("name") or "Plaid account"
         if not symbol or qty in (None, 0):
             skipped += 1
+            skipped_details.append(
+                f"{sec.get('name') or h.get('security_id') or 'holding'} "
+                f"in {acct_name}: "
+                f"{'no ticker' if not symbol else 'zero/missing quantity'}")
             continue
-        acct = accounts.get(h.get("account_id")) or {}
+        price = h.get("institution_price")
+        if price is None and h.get("institution_value") is not None and qty:
+            price = h["institution_value"] / qty
+        cost = h.get("cost_basis")
+        if cost is None and symbol not in missing_cost:
+            missing_cost.append(symbol)
+        if price is None and symbol not in missing_price:
+            missing_price.append(symbol)
+        key = (acct_name, symbol)
+        if key not in agg:
+            agg[key] = {
+                "account_name": acct_name, "symbol": symbol,
+                "description": sec.get("name") or "",
+                "quantity": 0.0, "last_price": price,
+                "cost_basis_total": 0.0, "_cost_seen": False,
+            }
+        a = agg[key]
+        a["quantity"] += qty
+        if cost is not None:
+            a["cost_basis_total"] += cost
+            a["_cost_seen"] = True
+        if a["last_price"] is None:
+            a["last_price"] = price
+        if not a["description"]:
+            a["description"] = sec.get("name") or ""
+    rows = []
+    for a in agg.values():
         rows.append({
-            "account_name": acct.get("name") or "Plaid account",
-            "symbol": symbol,
-            "description": sec.get("name") or "",
-            "quantity": qty,
-            "last_price": h.get("institution_price"),
-            "cost_basis_total": h.get("cost_basis"),
+            "account_name": a["account_name"], "symbol": a["symbol"],
+            "description": a["description"], "quantity": a["quantity"],
+            "last_price": a["last_price"],
+            "cost_basis_total": a["cost_basis_total"] if a["_cost_seen"] else None,
         })
-    return rows, skipped
+    return rows, skipped, skipped_details, missing_cost, missing_price
 
 
 @app.route("/api/plaid/status")
@@ -1285,6 +1375,7 @@ def plaid_sync():
             "No Plaid institution is linked yet. Connect one first."}), 400
     total_created = total_updated = total_skipped = 0
     errors = []
+    skipped_details, missing_cost, missing_price = [], [], []
     for item in items:
         try:
             plaid = _plaid_post("/investments/holdings/get",
@@ -1292,8 +1383,15 @@ def plaid_sync():
         except Exception as e:
             errors.append(f"{item.get('institution')}: {e}")
             continue
-        rows, skipped = _plaid_holdings_to_rows(plaid)
+        rows, skipped, details, m_cost, m_price = _plaid_holdings_to_rows(plaid)
         total_skipped += skipped
+        skipped_details.extend(details)
+        for s in m_cost:
+            if s not in missing_cost:
+                missing_cost.append(s)
+        for s in m_price:
+            if s not in missing_price:
+                missing_price.append(s)
         by_account = {}
         for r in rows:
             by_account.setdefault(r["account_name"], []).append(r)
@@ -1306,7 +1404,10 @@ def plaid_sync():
         item["last_sync"] = datetime.now(timezone.utc).isoformat()
     _save_plaid_tokens(items)
     return jsonify({"created": total_created, "updated": total_updated,
-                    "skipped": total_skipped, "errors": errors})
+                    "skipped": total_skipped, "errors": errors,
+                    "skipped_details": skipped_details,
+                    "missing_cost": missing_cost,
+                    "missing_price": missing_price})
 
 
 if __name__ == "__main__":

@@ -167,12 +167,44 @@ brokerage authentication step):
    or `production` (paid, requires Plaid approval) after sandbox works.
 
 Plaid cost basis is treated as a **total** cost (divided by quantity
-for storage, like Fidelity's Cost Basis Total). Access tokens are
+for storage, like Fidelity's Cost Basis Total — confirmed against
+Plaid's Holding docs, where cost_basis is 'the total amount spent to
+acquire all assets currently in the holding'). Plaid's cost_basis is
+nullable, so an institution that does not report it imports as 0 cost
+and is listed in the sync result as 'Missing cost basis' (and flagged
+by What to watch), not silently treated as a real 0. Likewise,
+institution_price is per share; when it is null but institution_value
+is present, the import derives price as institution_value / quantity.
+Holdings with no ticker are skipped and listed in the sync result
+('Skipped: …'), and two Plaid holdings with the same ticker in the
+same account are aggregated (quantity and cost summed) instead of the
+second overwriting the first. Access tokens are
 stored in the local `plaid_tokens.json` file (gitignored, mode 0600),
 **not** in the database and **not** in the repo — so a database
 backup does not back them up; copy that file separately if you need
 it. Do not put brokerage credentials, API keys, or real exports in
 this repo.
+
+## Holdings grouping, expand/collapse, and unpriced holdings
+
+Holdings stay grouped by account (brokerage account), with a per-account
+total row — grouping is not flattened by sorting: column sorting applies
+within each group, and groups stay ordered by owner then account name.
+Each group header is a toggle (▾/▸) that expands or collapses that
+account; collapsed groups still show their account total in the header.
+Collapsed state is remembered in the browser (`localStorage`, key
+`fin_dash_collapsed`), so it survives reloads and owner-tab switches.
+**Expand all** / **Collapse all** sit next to Refresh quotes.
+
+A holding with no price — no quote, no imported price, and (for Plaid)
+no institution price or value to derive one from — is **not** shown as
+$0.00 gain. Its Last price, Current value, Today's gain, and Total
+gain show as —, it is excluded from portfolio and account totals, and
+it is listed under the holdings table ('X holdings have no price yet')
+and in What to watch ('No price: SYM'). The old behaviour fell back to
+price = cost per share, which made value always equal cost and gain
+always exactly 0.00 — a fake flat holding. Money values that are
+missing (null) now render as — everywhere, not $0.00.
 
 ## PWA / Add to Home Screen (iPhone, no login)
 

@@ -25,10 +25,24 @@ const $ = (s) => document.querySelector(s);
 // mask only — the server still returns real values to the browser.
 let masked = false;
 try { masked = localStorage.getItem("fin_dash_masked") === "1"; } catch {}
-const money = (n) => masked ? "****"
-  : "$" + (n || 0).toLocaleString(undefined, {maximumFractionDigits: 2, minimumFractionDigits: 2});
-const moneySigned = (n) => masked ? "****"
-  : (n < 0 ? "-$" : "+$") + Math.abs(n || 0).toLocaleString(undefined, {maximumFractionDigits: 2, minimumFractionDigits: 2});
+// Null is a missing value, not zero: the old money() rendered null
+// as $0.00 (via n || 0), which is how an unpriced Plaid holding's
+// gain/loss showed as 0.0. Now null renders as "—" (or **** when
+// masked, so masking does not reveal whether a value is missing).
+const money = (n) => n == null ? (masked ? "****" : "—")
+  : masked ? "****"
+  : "$" + n.toLocaleString(undefined, {maximumFractionDigits: 2, minimumFractionDigits: 2});
+const moneySigned = (n) => n == null ? (masked ? "****" : "—")
+  : masked ? "****"
+  : (n < 0 ? "-$" : "+$") + Math.abs(n).toLocaleString(undefined, {maximumFractionDigits: 2, minimumFractionDigits: 2});
+// Collapsed account groups, persisted across reloads and owner-tab
+// switches, so the grouping (and which groups are open) stays put.
+let collapsedGroups = new Set();
+try { collapsedGroups = new Set(JSON.parse(localStorage.getItem("fin_dash_collapsed") || "[]")); } catch {}
+const groupKey = (g) => `${g.owner}|${g.account}`;
+function saveCollapsed() {
+  try { localStorage.setItem("fin_dash_collapsed", JSON.stringify([...collapsedGroups])); } catch {}
+}
 
 function updateMaskButton() {
   const b = $("#mask-toggle");
@@ -65,11 +79,11 @@ function holdingRow(h) {
   // with the column name shown before its value.
   return `<tr data-symbol="${h.symbol}" class="holding-row">
     <td class="symbol-col" data-label="Symbol"><strong title="${escAttr(h.name)}">${h.symbol}</strong></td>
-    <td class="num" data-label="Last price">${money(h.price)}<span class="sub-line ${cls(h.last_change)}">${moneySigned(h.last_change)} ${pct(h.last_change_pct)}</span></td>
-    <td class="num ${cls(h.today_gain)}" data-label="Today's gain/loss">${moneySigned(h.today_gain)}<span class="sub-line">${pct(h.today_gain_pct)}</span></td>
-    <td class="num ${cls(h.total_gain)}" data-label="Total gain/loss">${moneySigned(h.total_gain)}<span class="sub-line">${pct(h.total_gain_pct)}</span></td>
+    <td class="num" data-label="Last price">${money(h.price)}<span class="sub-line ${h.last_change == null ? "" : cls(h.last_change)}">${moneySigned(h.last_change)} ${h.last_change_pct == null ? "—" : pct(h.last_change_pct)}</span></td>
+    <td class="num ${h.today_gain == null ? "" : cls(h.today_gain)}" data-label="Today's gain/loss">${moneySigned(h.today_gain)}<span class="sub-line">${h.today_gain_pct == null ? "—" : pct(h.today_gain_pct)}</span></td>
+    <td class="num ${h.total_gain == null ? "" : cls(h.total_gain)}" data-label="Total gain/loss">${moneySigned(h.total_gain)}<span class="sub-line">${h.total_gain_pct == null ? "—" : pct(h.total_gain_pct)}</span></td>
     <td class="num" data-label="Current value">${money(h.current_value)}</td>
-    <td class="num" data-label="% of account">${h.pct_of_account.toFixed(2)}%</td>
+    <td class="num" data-label="% of account">${h.pct_of_account == null ? "—" : h.pct_of_account.toFixed(2) + "%"}</td>
     <td class="num" data-label="Quantity">${num(h.quantity)}</td>
     <td class="num" data-label="Cost basis">${money(h.cost_total)}<span class="sub-line">${money(h.cost_per_share)} / Share</span></td>
     <td data-label="Day range">${dayRangeCell(h)}</td>
@@ -88,33 +102,67 @@ function totalRow(label, today, total, value) {
 function renderHoldings() {
   const d = lastData;
   if (!d) return;
-  let holdings = [...d.holdings];
-  holdings.sort((a, b) => {
-    const av = a[sortKey], bv = b[sortKey];
-    if (typeof av === "string") return av.localeCompare(bv) * sortDir;
-    return ((av || 0) - (bv || 0)) * sortDir;
-  });
-  // Group by account, Fidelity-style: one account header, then its rows,
-  // then that account's total. The overall total follows in <tfoot>.
+  // Group by account (brokerage account, Fidelity-style: one account
+  // header, then its rows, then that account's total; the overall
+  // total follows in <tfoot>). Grouping stays in place: groups are
+  // ordered by owner then account name, and sorting applies WITHIN
+  // each group only — the old code sorted holdings globally first,
+  // so clicking a sort header reordered the groups themselves.
+  // Each group header is an expand/collapse toggle; collapsed groups
+  // still show their account total in the header, and the collapsed
+  // set is persisted in localStorage (see collapsedGroups above).
   const groups = [];
-  for (const h of holdings) {
+  for (const h of d.holdings) {
     let g = groups.find((x) => x.account === h.account_name && x.owner === h.owner_name);
     if (!g) { g = {account: h.account_name, owner: h.owner_name, rows: []}; groups.push(g); }
     g.rows.push(h);
   }
+  groups.sort((a, b) => (a.owner + "|" + a.account).localeCompare(b.owner + "|" + b.account));
+  const sortRows = (rows) => [...rows].sort((a, b) => {
+    const av = a[sortKey], bv = b[sortKey];
+    if (av == null && bv == null) return 0;
+    if (av == null) return 1;  // unpriced rows sort last, never as 0
+    if (bv == null) return -1;
+    if (typeof av === "string") return av.localeCompare(bv) * sortDir;
+    return (av - bv) * sortDir;
+  });
   let html = "";
   for (const g of groups) {
-    const tv = g.rows.reduce((s, h) => s + h.current_value, 0);
-    const tt = g.rows.reduce((s, h) => s + h.today_gain, 0);
-    const tg = g.rows.reduce((s, h) => s + h.total_gain, 0);
-    html += `<tr class="group-header"><td colspan="11">${g.account} — ${g.owner}</td></tr>`;
-    html += g.rows.map(holdingRow).join("");
-    html += totalRow("Account total", tt, tg, tv);
+    const rows = sortRows(g.rows);
+    const priced = rows.filter((h) => h.priced);
+    const tv = priced.reduce((s, h) => s + h.current_value, 0);
+    const tt = priced.reduce((s, h) => s + (h.today_gain || 0), 0);
+    const tg = priced.reduce((s, h) => s + h.total_gain, 0);
+    const collapsed = collapsedGroups.has(groupKey(g));
+    const arrow = collapsed ? "▸" : "▾";
+    html += `<tr class="group-header" data-group="${escAttr(groupKey(g))}"><td colspan="11">` +
+      `<button class="group-toggle" aria-expanded="${!collapsed}">${arrow}</button> ` +
+      `${g.account} — ${g.owner} &nbsp;·&nbsp; ${money(tv)}` +
+      ` <span class="${tg < 0 ? "neg" : "pos"}">${moneySigned(tg)}</span>` +
+      (collapsed ? ` <span class="small">(${rows.length} holding${rows.length === 1 ? "" : "s"} — collapsed)</span>` : "") +
+      `</td></tr>`;
+    if (!collapsed) {
+      html += rows.map(holdingRow).join("");
+      html += totalRow("Account total", tt, tg, tv);
+    }
   }
   if (!html) html = `<tr><td colspan="11">No holdings yet — add one below or import a CSV/XLSX export.</td></tr>`;
   $("#holdings tbody").innerHTML = html;
+  // Unpriced holdings are excluded from totals (see dashboard): say
+  // so in plain sight, instead of letting a total silently omit them.
+  const unpriced = d.unpriced || [];
+  $("#unpriced-note").textContent = unpriced.length
+    ? `${unpriced.length} holding${unpriced.length === 1 ? "" : "s"} ha${unpriced.length === 1 ? "s" : "ve"} no price yet (${unpriced.join(", ")}) — shown as — and excluded from totals. Refresh quotes, or check the Plaid sync result for a missing price.`
+    : "";
   const t = d.totals;
   $("#holdings tfoot").innerHTML = totalRow("Account total", t.day_move, t.gain, t.value);
+  document.querySelectorAll("#holdings tbody tr.group-header").forEach((tr) =>
+    tr.addEventListener("click", () => {
+      const key = tr.dataset.group;
+      if (collapsedGroups.has(key)) collapsedGroups.delete(key); else collapsedGroups.add(key);
+      saveCollapsed();
+      renderHoldings();
+    }));
   document.querySelectorAll("#holdings tbody tr.holding-row").forEach((tr) =>
     tr.addEventListener("click", (e) => { if (!e.target.dataset.del) showDetail(tr.dataset.symbol); }));
   document.querySelectorAll("[data-del]").forEach((b) =>
@@ -139,7 +187,10 @@ function drawAllocation() {
   const c = $("#alloc-chart"), ctx = c.getContext("2d");
   ctx.clearRect(0, 0, c.width, c.height);
   const bySym = {};
-  (lastData.holdings || []).forEach((h) => { bySym[h.symbol] = (bySym[h.symbol] || 0) + h.current_value; });
+  (lastData.holdings || []).forEach((h) => {
+    if (h.current_value == null) return;  // unpriced: excluded, not 0
+    bySym[h.symbol] = (bySym[h.symbol] || 0) + h.current_value;
+  });
   const entries = Object.entries(bySym).sort((a, b) => b[1] - a[1]);
   const total = entries.reduce((s, [, v]) => s + v, 0);
   if (!total) { $("#alloc-legend").textContent = "No holdings yet."; return; }
@@ -299,6 +350,14 @@ async function showDetail(symbol) {
   drawChart(d.history);
 }
 
+// Expand / collapse all account groups (persisted like single toggles).
+$("#expand-all").addEventListener("click", () => { collapsedGroups.clear(); saveCollapsed(); renderHoldings(); });
+$("#collapse-all").addEventListener("click", () => {
+  if (!lastData) return;
+  for (const h of lastData.holdings) collapsedGroups.add(`${h.owner_name}|${h.account_name}`);
+  saveCollapsed(); renderHoldings();
+});
+
 // Export / backup: plain downloads, no API JSON to render.
 $("#export-csv").addEventListener("click", () => {
   const a = document.createElement("a");
@@ -346,9 +405,20 @@ $("#plaid-sync").addEventListener("click", async () => {
   $("#plaid-result").textContent = "Syncing…";
   const r = await (await fetch("/api/plaid/sync", {method: "POST", headers: {"Content-Type": "application/json"},
     body: JSON.stringify({owner_id: $("#plaid-owner").value})})).json();
-  $("#plaid-result").textContent = r.error
-    ? `Sync failed: ${r.error}`
-    : `Created ${r.created}, updated ${r.updated}, skipped ${r.skipped}${r.errors && r.errors.length ? ` — errors: ${r.errors.join("; ")}` : ""}.`;
+  if (r.error) {
+    $("#plaid-result").textContent = `Sync failed: ${r.error}`;
+  } else {
+    // Surface the inconsistencies instead of hiding them in a count:
+    // missing cost (Plaid cost_basis is nullable), missing price
+    // (no institution_price and no institution_value to derive one
+    // from), and holdings skipped for having no ticker.
+    let extra = "";
+    if (r.missing_cost && r.missing_cost.length) extra += ` Missing cost basis: ${r.missing_cost.join(", ")}.`;
+    if (r.missing_price && r.missing_price.length) extra += ` Missing price: ${r.missing_price.join(", ")} — those rows show — for value/gain, not $0.00.`;
+    if (r.skipped_details && r.skipped_details.length) extra += ` Skipped: ${r.skipped_details.join("; ")}.`;
+    if (r.errors && r.errors.length) extra += ` Errors: ${r.errors.join("; ")}.`;
+    $("#plaid-result").textContent = `Created ${r.created}, updated ${r.updated}, skipped ${r.skipped}.${extra}`;
+  }
   if (!r.error) { loadPlaidStatus(); load(); }
 });
 loadPlaidStatus();
