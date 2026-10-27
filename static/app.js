@@ -60,18 +60,21 @@ function dayRangeCell(h) {
 function holdingRow(h) {
   // Full company name is a hover tooltip only, not a second line — the
   // ticker column stays narrow (tickers are at most ~4-5 characters).
+  // data-label on every cell drives the phone card layout (see
+  // style.css @media): on a narrow screen each row becomes a card
+  // with the column name shown before its value.
   return `<tr data-symbol="${h.symbol}" class="holding-row">
-    <td class="symbol-col"><strong title="${escAttr(h.name)}">${h.symbol}</strong></td>
-    <td class="num">${money(h.price)}<span class="sub-line ${cls(h.last_change)}">${moneySigned(h.last_change)} ${pct(h.last_change_pct)}</span></td>
-    <td class="num ${cls(h.today_gain)}">${moneySigned(h.today_gain)}<span class="sub-line">${pct(h.today_gain_pct)}</span></td>
-    <td class="num ${cls(h.total_gain)}">${moneySigned(h.total_gain)}<span class="sub-line">${pct(h.total_gain_pct)}</span></td>
-    <td class="num">${money(h.current_value)}</td>
-    <td class="num">${h.pct_of_account.toFixed(2)}%</td>
-    <td class="num">${num(h.quantity)}</td>
-    <td class="num">${money(h.cost_total)}<span class="sub-line">${money(h.cost_per_share)} / Share</span></td>
-    <td>${dayRangeCell(h)}</td>
-    <td>${rangeCell(h)}</td>
-    <td><button data-del="${h.id}">Remove</button></td>
+    <td class="symbol-col" data-label="Symbol"><strong title="${escAttr(h.name)}">${h.symbol}</strong></td>
+    <td class="num" data-label="Last price">${money(h.price)}<span class="sub-line ${cls(h.last_change)}">${moneySigned(h.last_change)} ${pct(h.last_change_pct)}</span></td>
+    <td class="num ${cls(h.today_gain)}" data-label="Today's gain/loss">${moneySigned(h.today_gain)}<span class="sub-line">${pct(h.today_gain_pct)}</span></td>
+    <td class="num ${cls(h.total_gain)}" data-label="Total gain/loss">${moneySigned(h.total_gain)}<span class="sub-line">${pct(h.total_gain_pct)}</span></td>
+    <td class="num" data-label="Current value">${money(h.current_value)}</td>
+    <td class="num" data-label="% of account">${h.pct_of_account.toFixed(2)}%</td>
+    <td class="num" data-label="Quantity">${num(h.quantity)}</td>
+    <td class="num" data-label="Cost basis">${money(h.cost_total)}<span class="sub-line">${money(h.cost_per_share)} / Share</span></td>
+    <td data-label="Day range">${dayRangeCell(h)}</td>
+    <td data-label="52-week range">${rangeCell(h)}</td>
+    <td data-label=""><button data-del="${h.id}">Remove</button></td>
   </tr>`;
 }
 
@@ -241,7 +244,7 @@ function renderTabs() {
 }
 
 function fillSelects() {
-  for (const id of ["#add-owner", "#import-owner"]) {
+  for (const id of ["#add-owner", "#import-owner", "#plaid-owner"]) {
     const sel = $(id);
     if (!sel.dataset.filled) {
       sel.innerHTML = owners.map((o) => `<option value="${o.id}">${o.name}</option>`).join("");
@@ -283,11 +286,72 @@ async function showDetail(symbol) {
     ? ` • 52-week range ${money(d.week_low)} – ${money(d.week_high)}` : "";
   const day = (d.day_low != null && d.day_high != null)
     ? ` • Day range ${money(d.day_low)} – ${money(d.day_high)}` : "";
+  // Beta / market cap are best-effort from Nasdaq's summary (no key);
+  // when Nasdaq does not publish them for a symbol they are omitted,
+  // never estimated. Market cap goes through money() so the eye mask
+  // hides it like every other dollar amount.
+  const beta = (d.beta != null) ? ` • Beta ${d.beta.toFixed(2)}` : "";
+  const mcap = (d.market_cap != null) ? ` • Market cap ${money(d.market_cap)}` : "";
+  const sector = d.sector ? ` • ${d.sector}${d.industry ? ` — ${d.industry}` : ""}` : "";
   $("#detail-meta").textContent = d.quote
-    ? `Last quote ${money(d.quote.price)} via ${d.quote.provider} at ${d.quote.as_of || "unknown"}${day}${range}`
+    ? `Last quote ${money(d.quote.price)} via ${d.quote.provider} at ${d.quote.as_of || "unknown"}${day}${range}${beta}${mcap}${sector}`
     : "No cached quote yet — click Refresh quotes.";
   drawChart(d.history);
 }
+
+// Export / backup: plain downloads, no API JSON to render.
+$("#export-csv").addEventListener("click", () => {
+  const a = document.createElement("a");
+  a.href = `/api/export?owner=${owner}`; a.download = "fin_dash_holdings.csv";
+  a.click();
+});
+$("#backup-db").addEventListener("click", () => {
+  const a = document.createElement("a");
+  a.href = "/api/backup"; a.download = "fin_dash_backup.db";
+  a.click();
+});
+
+// Plaid (self-hosted only): status on load, Link on connect, sync on
+// demand. No dashboard login is involved — Plaid Link is the auth.
+async function loadPlaidStatus() {
+  try {
+    const s = await (await fetch("/api/plaid/status")).json();
+    const el = $("#plaid-status");
+    if (!s.configured) {
+      el.textContent = "Plaid is not configured yet — set PLAID_CLIENT_ID / PLAID_SECRET in a local .env (start with PLAID_ENV=sandbox) and restart the server. See README.";
+    } else if (!s.token_count) {
+      el.textContent = `Plaid is configured (${s.env}) — no institution linked yet. Click “Connect brokerage via Plaid”.`;
+    } else {
+      el.textContent = `Plaid (${s.env}): linked ${s.institutions.join(", ")}${s.last_sync && s.last_sync[0] ? ` — last sync ${s.last_sync[0]}` : ""}.`;
+    }
+  } catch { $("#plaid-status").textContent = "Could not reach the Plaid status endpoint."; }
+}
+$("#plaid-connect").addEventListener("click", async () => {
+  const r = await (await fetch("/api/plaid/link-token", {method: "POST"})).json();
+  if (!r.link_token) { $("#plaid-result").textContent = r.error || "Could not create a Plaid link token."; return; }
+  if (!window.Plaid) { $("#plaid-result").textContent = "Plaid Link script did not load — check your network and reload."; return; }
+  const handler = Plaid.create({
+    token: r.link_token,
+    onSuccess: async (public_token, metadata) => {
+      const ex = await (await fetch("/api/plaid/exchange", {method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({public_token, institution_name: metadata.institution && metadata.institution.name})})).json();
+      $("#plaid-result").textContent = ex.ok ? `Linked ${ex.institution}. Click “Sync Plaid holdings”.` : (ex.error || "Exchange failed.");
+      loadPlaidStatus();
+    },
+    onExit: (err) => { if (err) $("#plaid-result").textContent = `Plaid Link closed: ${err.error_message || err.error_code}`; },
+  });
+  handler.open();
+});
+$("#plaid-sync").addEventListener("click", async () => {
+  $("#plaid-result").textContent = "Syncing…";
+  const r = await (await fetch("/api/plaid/sync", {method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({owner_id: $("#plaid-owner").value})})).json();
+  $("#plaid-result").textContent = r.error
+    ? `Sync failed: ${r.error}`
+    : `Created ${r.created}, updated ${r.updated}, skipped ${r.skipped}${r.errors && r.errors.length ? ` — errors: ${r.errors.join("; ")}` : ""}.`;
+  if (!r.error) { loadPlaidStatus(); load(); }
+});
+loadPlaidStatus();
 
 $("#refresh").addEventListener("click", async () => {
   const r = await (await fetch("/api/refresh", {method: "POST"})).json();

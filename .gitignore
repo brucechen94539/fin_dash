@@ -1,4 +1,5 @@
 fin_dash.db*
 .env
+plaid_tokens.json
 __pycache__/
 *.pyc

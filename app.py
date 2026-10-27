@@ -38,11 +38,25 @@ import urllib.request
 import urllib.error
 from datetime import datetime, timezone
 
-from flask import Flask, g, jsonify, request, send_from_directory
+from flask import Flask, Response, g, jsonify, request, send_from_directory
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.environ.get("FIN_DASH_DB", os.path.join(APP_DIR, "fin_dash.db"))
 FINNHUB_KEY = os.environ.get("FINNHUB_API_KEY", "").strip()
+
+# Plaid (Mac / self-hosted only — see the Plaid section below). No
+# dashboard login is involved: Plaid Link itself authenticates the
+# brokerage connection. Tokens live in plaid_tokens.json next to
+# app.py (gitignored, never in the repo, and NOT included in the
+# /api/backup database download — back that file up separately).
+PLAID_CLIENT_ID = os.environ.get("PLAID_CLIENT_ID", "").strip()
+PLAID_SECRET = os.environ.get("PLAID_SECRET", "").strip()
+PLAID_ENV = os.environ.get("PLAID_ENV", "sandbox").strip() or "sandbox"
+PLAID_TOKENS_PATH = os.environ.get(
+    "PLAID_TOKENS_PATH", os.path.join(APP_DIR, "plaid_tokens.json"))
+_PLAID_HOSTS = {"sandbox": "sandbox.plaid.com",
+                "development": "development.plaid.com",
+                "production": "production.plaid.com"}
 
 app = Flask(__name__, static_folder="static", template_folder="templates")
 
@@ -98,6 +112,14 @@ def init_db():
             price REAL, change REAL, change_pct REAL, volume REAL,
             provider TEXT, as_of TEXT, week_low REAL, week_high REAL,
             day_low REAL, day_high REAL
+        );
+        CREATE TABLE IF NOT EXISTS history_cache (
+            symbol TEXT NOT NULL, date TEXT NOT NULL,
+            open REAL, high REAL, low REAL, close REAL, volume REAL,
+            PRIMARY KEY (symbol, date)
+        );
+        CREATE TABLE IF NOT EXISTS history_meta (
+            symbol TEXT PRIMARY KEY, fetched_date TEXT
         );
         """
     )
@@ -289,7 +311,115 @@ def _quotes_need_refresh(db, symbols):
     return stale
 
 
+def _nasdaq_summary(symbol):
+    """Beta + market cap + sector/industry, best-effort, no key.
+
+    Yahoo's quote / quoteSummary endpoints now return 401 without a
+    crumb, so they are not usable from the server; the Nasdaq quote
+    summary endpoint (public, no key) still returns MarketCap for
+    stocks and ETFs, and Beta for ETFs (stocks return it when Nasdaq
+    publishes one). Returns {} when unavailable — the detail view
+    then simply omits beta/market cap instead of inventing them.
+    Values are parsed to floats where possible; 'N/A' becomes None."""
+    for assetclass in ("stocks", "etf"):
+        try:
+            data = _http_json_nasdaq(
+                f"https://api.nasdaq.com/api/quote/{symbol}/summary"
+                f"?assetclass={assetclass}", timeout=10)
+        except Exception:
+            continue
+        if not data:
+            continue
+        summary = (data.get("data") or {}).get("summaryData") or {}
+        if not summary:
+            continue
+        def _val(key):
+            v = (summary.get(key) or {}).get("value")
+            if v in (None, "", "N/A"):
+                return None
+            if isinstance(v, (int, float)):
+                return float(v)
+            try:
+                return float(str(v).replace("$", "").replace(",", ""))
+            except ValueError:
+                return None
+        out = {"beta": _val("Beta"), "market_cap": _val("MarketCap"),
+               "sector": (summary.get("Sector") or {}).get("value"),
+               "industry": (summary.get("Industry") or {}).get("value")}
+        if out["beta"] is not None or out["market_cap"] is not None:
+            return out
+        # A summary with neither beta nor market cap is not a match
+        # (wrong asset class can return a near-empty summary); try next.
+    return {}
+
+
+def _http_json_nasdaq(url, timeout=10):
+    req = urllib.request.Request(
+        url, headers={"User-Agent": "Mozilla/5.0",
+                      "Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
 def fetch_history(symbol):
+    """Daily OHLCV, Yahoo first, Stooq as fallback. Returns list of dicts.
+
+    Cached per symbol for one UTC day (see _history_cached): the
+    growth chart calls fetch_history once per symbol, and the detail
+    view calls it again for the same symbol, so without the cache a
+    dashboard load fetched the same 1-year history twice and the
+    growth chart re-fetched it on every owner-tab switch. A second
+    load on the same day now reads the cache instead."""
+    cached = _history_cached(symbol)
+    if cached is not None:
+        return cached
+    hist = _fetch_history_live(symbol)
+    if hist:
+        _history_store(symbol, hist)
+    return hist
+
+
+def _history_cached(symbol):
+    """Cached history if it was fetched today (UTC), else None."""
+    try:
+        db = get_db()
+    except RuntimeError:
+        return None
+    today = datetime.now(timezone.utc).date().isoformat()
+    meta = db.execute("SELECT fetched_date FROM history_meta WHERE symbol=?",
+                      (symbol.upper(),)).fetchone()
+    if meta is None or meta["fetched_date"] != today:
+        return None
+    rows = db.execute(
+        "SELECT date, open, high, low, close, volume FROM history_cache "
+        "WHERE symbol=? ORDER BY date", (symbol.upper(),)).fetchall()
+    if not rows:
+        return None
+    return [row(r) for r in rows]
+
+
+def _history_store(symbol, hist):
+    try:
+        db = get_db()
+    except RuntimeError:
+        return
+    sym = symbol.upper()
+    today = datetime.now(timezone.utc).date().isoformat()
+    db.execute("DELETE FROM history_cache WHERE symbol=?", (sym,))
+    for h in hist:
+        db.execute(
+            "INSERT INTO history_cache (symbol, date, open, high, low, "
+            "close, volume) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (sym, h["date"], h["open"], h["high"], h["low"], h["close"],
+             h["volume"]))
+    db.execute(
+        "INSERT INTO history_meta (symbol, fetched_date) VALUES (?, ?) "
+        "ON CONFLICT(symbol) DO UPDATE SET fetched_date=excluded.fetched_date",
+        (sym, today))
+    db.commit()
+
+
+def _fetch_history_live(symbol):
     """Daily OHLCV, Yahoo first, Stooq as fallback. Returns list of dicts."""
     try:
         result = _yahoo_chart(symbol, "1y")["chart"]["result"][0]
@@ -592,10 +722,18 @@ def symbol_detail(symbol):
         # Last history bar is today's (or the last trading day's) bar.
         day_low = history[-1]["low"]
         day_high = history[-1]["high"]
+    # Beta / market cap are best-effort (Nasdaq summary, no key); a
+    # symbol Nasdaq does not cover returns None, not an estimate.
+    try:
+        nasdaq = _nasdaq_summary(symbol.upper())
+    except Exception:
+        nasdaq = {}
     return jsonify({
         "symbol": symbol.upper(), "quote": quote, "history": history,
         "week_low": week_low, "week_high": week_high,
         "day_low": day_low, "day_high": day_high,
+        "beta": nasdaq.get("beta"), "market_cap": nasdaq.get("market_cap"),
+        "sector": nasdaq.get("sector"), "industry": nasdaq.get("industry"),
     })
 
 
@@ -914,6 +1052,261 @@ def refresh_quotes():
         return jsonify({"error": "database busy, please try Refresh again"}), 503
     return jsonify({"refreshed": refreshed, "failed": failed,
                     "provider": "finnhub" if FINNHUB_KEY else "yahoo-delayed"})
+
+
+# ------------------------------------------------------- export / backup
+@app.route("/api/export")
+def export_holdings():
+    """CSV download of the current holdings (computed like the
+    dashboard: last price from the quote cache, else the manual /
+    imported price). This is an export of what the dashboard shows,
+    not a brokerage file — re-importing it uses the generic path."""
+    db = get_db()
+    owner = request.args.get("owner", "all")
+    q = """
+        SELECT h.*, a.name AS account_name, o.name AS owner_name
+        FROM holdings h
+        JOIN accounts a ON a.id = h.account_id
+        JOIN owners o ON o.id = a.owner_id
+    """
+    params = []
+    if owner != "all":
+        q += " WHERE o.id = ?"
+        params.append(owner)
+    q += " ORDER BY o.id, a.name, h.symbol"
+    quotes = {r["symbol"]: row(r) for r in db.execute("SELECT * FROM quotes")}
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["Owner", "Account", "Symbol", "Name", "Quantity",
+                "Cost basis per share", "Cost basis total", "Last price",
+                "Current value", "Total gain/loss", "Today's gain/loss"])
+    for h in db.execute(q, params):
+        quote = quotes.get(h["symbol"])
+        price = quote["price"] if quote and quote["price"] else h["manual_price"]
+        if price is None:
+            price = h["cost_basis"] / h["shares"] if h["shares"] else 0
+        value = price * h["shares"]
+        w.writerow([h["owner_name"], h["account_name"], h["symbol"], h["name"],
+                    h["shares"], h["cost_basis"], h["cost_basis"] * h["shares"],
+                    price, value, value - h["cost_basis"] * h["shares"],
+                    (quote["change"] * h["shares"]
+                     if quote and quote["change"] is not None else "")])
+    return Response(buf.getvalue(), mimetype="text/csv",
+                    headers={"Content-Disposition":
+                             "attachment; filename=fin_dash_holdings.csv"})
+
+
+@app.route("/api/backup")
+def backup_db():
+    """One-click SQLite backup download (online backup API, so it is
+    consistent even while the server is running). The download is the
+    fin_dash database ONLY: Plaid access tokens live in the separate
+    plaid_tokens.json file and are deliberately not in this file —
+    back that file up separately if you use Plaid, and never commit
+    either file to the repo."""
+    import sqlite3 as _sqlite3
+    import tempfile
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    tmp_path = tmp.name
+    tmp.close()
+    try:
+        src = _sqlite3.connect(DB_PATH, timeout=30)
+        dst = _sqlite3.connect(tmp_path)
+        try:
+            src.backup(dst)
+        finally:
+            dst.close()
+            src.close()
+        # The database is small (personal holdings), so read it into
+        # memory and delete the temp file immediately — no temp files
+        # accumulate, and the download still contains only holdings
+        # (Plaid tokens are not in the database).
+        with open(tmp_path, "rb") as f:
+            data = f.read()
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+    return Response(data, mimetype="application/x-sqlite3",
+                    headers={"Content-Disposition":
+                             "attachment; filename=fin_dash_backup.db"})
+
+
+# ------------------------------------------------------------------- Plaid
+# Self-hosted Plaid sync. This is NOT Muse's Plaid connector: Muse's
+# credentials do not transfer to a Mac, so the Mac app needs its own
+# Plaid developer account. Start in sandbox (PLAID_ENV=sandbox, free
+# test institutions, no real money), then switch to development /
+# production only after sandbox works. Set PLAID_CLIENT_ID and
+# PLAID_SECRET in a local .env (gitignored, never in the repo) and
+# restart the server. No dashboard login is added by this feature:
+# Plaid Link itself is the authentication step for the brokerage.
+def _plaid_configured():
+    return bool(PLAID_CLIENT_ID and PLAID_SECRET)
+
+
+def _plaid_post(path, body):
+    host = _PLAID_HOSTS.get(PLAID_ENV)
+    if not host:
+        raise ValueError(f"unknown PLAID_ENV {PLAID_ENV!r}")
+    payload = dict(body)
+    payload.update({"client_id": PLAID_CLIENT_ID, "secret": PLAID_SECRET})
+    req = urllib.request.Request(
+        f"https://{host}{path}",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def _load_plaid_tokens():
+    try:
+        with open(PLAID_TOKENS_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except (OSError, ValueError):
+        return []
+
+
+def _save_plaid_tokens(items):
+    with open(PLAID_TOKENS_PATH, "w", encoding="utf-8") as f:
+        json.dump(items, f, indent=2)
+    try:
+        os.chmod(PLAID_TOKENS_PATH, 0o600)
+    except OSError:
+        pass
+
+
+def _plaid_holdings_to_rows(plaid):
+    """Pure mapping, unit-testable without Plaid credentials.
+
+    Plaid's investments/holdings/get returns holdings (quantity +
+    cost_basis + institution_price, keyed by security_id / account_id)
+    plus securities (security_id -> ticker) and accounts (account_id
+    -> name). Plaid's cost_basis is a TOTAL cost, so import_rows (which
+    stores cost per share) receives it as cost_basis_total and divides
+    by quantity there. Holdings with no ticker (e.g. cash-like entries)
+    are skipped, like cash rows in CSV imports."""
+    securities = {s.get("security_id"): s for s in plaid.get("securities", [])}
+    accounts = {a.get("account_id"): a for a in plaid.get("accounts", [])}
+    rows, skipped = [], 0
+    for h in plaid.get("holdings", []):
+        sec = securities.get(h.get("security_id")) or {}
+        symbol = (sec.get("ticker_symbol") or "").strip().upper()
+        qty = h.get("quantity")
+        if not symbol or qty in (None, 0):
+            skipped += 1
+            continue
+        acct = accounts.get(h.get("account_id")) or {}
+        rows.append({
+            "account_name": acct.get("name") or "Plaid account",
+            "symbol": symbol,
+            "description": sec.get("name") or "",
+            "quantity": qty,
+            "last_price": h.get("institution_price"),
+            "cost_basis_total": h.get("cost_basis"),
+        })
+    return rows, skipped
+
+
+@app.route("/api/plaid/status")
+def plaid_status():
+    items = _load_plaid_tokens()
+    return jsonify({
+        "configured": _plaid_configured(), "env": PLAID_ENV,
+        "institutions": [i.get("institution") for i in items],
+        "token_count": len(items),
+        "last_sync": [i.get("last_sync") for i in items],
+    })
+
+
+@app.route("/api/plaid/link-token", methods=["POST"])
+def plaid_link_token():
+    if not _plaid_configured():
+        return jsonify({"error":
+            "Plaid is not configured. Set PLAID_CLIENT_ID and PLAID_SECRET "
+            "in a local .env (start with PLAID_ENV=sandbox), restart the "
+            "server, and try again. See README for the setup steps."}), 400
+    try:
+        out = _plaid_post("/link/token/create", {
+            "user": {"client_user_id": "fin_dash"},
+            "client_name": "fin_dash",
+            "products": ["investments"],
+            "country_codes": ["US"],
+            "language": "en",
+        })
+    except Exception as e:
+        return jsonify({"error": f"Plaid link-token failed: {e}"}), 502
+    return jsonify({"link_token": out.get("link_token")})
+
+
+@app.route("/api/plaid/exchange", methods=["POST"])
+def plaid_exchange():
+    body = request.json or {}
+    public_token = body.get("public_token")
+    if not public_token:
+        return jsonify({"error": "public_token is required"}), 400
+    if not _plaid_configured():
+        return jsonify({"error": "Plaid is not configured"}), 400
+    try:
+        out = _plaid_post("/item/public_token/exchange",
+                          {"public_token": public_token})
+    except Exception as e:
+        return jsonify({"error": f"Plaid exchange failed: {e}"}), 502
+    items = _load_plaid_tokens()
+    item_id = out.get("item_id")
+    items = [i for i in items if i.get("item_id") != item_id]
+    items.append({
+        "item_id": item_id,
+        "access_token": out.get("access_token"),
+        "institution": body.get("institution_name") or "Plaid institution",
+        "last_sync": None,
+    })
+    _save_plaid_tokens(items)
+    return jsonify({"ok": True, "institution": items[-1]["institution"]})
+
+
+@app.route("/api/plaid/sync", methods=["POST"])
+def plaid_sync():
+    """Pull holdings for every linked institution and merge them into
+    fin_dash accounts named '<Institution> — <Account> (Plaid)'.
+    Re-syncing updates the same account + symbol instead of
+    duplicating it (same merge rule as CSV re-import). Do NOT also
+    CSV-import the same brokerage into a different account name, or
+    the same holding will appear twice under two accounts."""
+    body = request.json or {}
+    owner_id = body.get("owner_id")
+    if not owner_id:
+        return jsonify({"error": "owner_id is required"}), 400
+    items = _load_plaid_tokens()
+    if not items:
+        return jsonify({"error":
+            "No Plaid institution is linked yet. Connect one first."}), 400
+    total_created = total_updated = total_skipped = 0
+    errors = []
+    for item in items:
+        try:
+            plaid = _plaid_post("/investments/holdings/get",
+                                {"access_token": item["access_token"]})
+        except Exception as e:
+            errors.append(f"{item.get('institution')}: {e}")
+            continue
+        rows, skipped = _plaid_holdings_to_rows(plaid)
+        total_skipped += skipped
+        by_account = {}
+        for r in rows:
+            by_account.setdefault(r["account_name"], []).append(r)
+        for acct_name, acct_rows in by_account.items():
+            full_name = f"{item.get('institution')} — {acct_name} (Plaid)"
+            result = import_rows(acct_rows, int(owner_id), full_name)
+            total_created += result["created"]
+            total_updated += result["updated"]
+            total_skipped += result["skipped"]
+        item["last_sync"] = datetime.now(timezone.utc).isoformat()
+    _save_plaid_tokens(items)
+    return jsonify({"created": total_created, "updated": total_updated,
+                    "skipped": total_skipped, "errors": errors})
 
 
 if __name__ == "__main__":

@@ -41,6 +41,45 @@ input, select { padding: 8px; border: 1px solid #cbd3df; border-radius: 8px; }
 .range-bar { display: block; position: relative; height: 2px; background: #cbd3df; margin: 10px 4px 4px; }
 .range-bar i { position: absolute; top: -4px; width: 9px; height: 9px; background: #1c2333; transform: rotate(45deg); }
 .range-labels { display: flex; flex-wrap: wrap; justify-content: space-between; color: #556; font-size: 12px; overflow-wrap: break-word; }
+/* Phone card layout: below 640px the wide holdings table stops
+   scrolling sideways and each holding row becomes a card, with the
+   column name (from data-label in app.js) shown before its value.
+   Group headers, total rows and the table header keep their normal
+   layout — only holding rows are re-shaped. Range bars keep their
+   full width inside the card. */
+@media (max-width: 640px) {
+  #holdings thead { display: none; }
+  #holdings, #holdings tbody, #holdings tr.holding-row, #holdings td {
+    display: block; width: 100%; box-sizing: border-box;
+  }
+  #holdings tr.holding-row {
+    border: 1px solid #e2e8f0; border-radius: 12px;
+    margin: 12px 0; padding: 4px 0;
+  }
+  #holdings tr.holding-row td {
+    max-width: none; display: flex; justify-content: space-between;
+    gap: 12px; text-align: right; border-bottom: 1px solid #f1f5f9;
+  }
+  #holdings tr.holding-row td:last-child { border-bottom: none; }
+  #holdings tr.holding-row td::before {
+    content: attr(data-label); color: #556; font-size: 13px;
+    text-align: left; flex: 0 0 auto;
+  }
+  #holdings tr.holding-row td:empty::before { content: none; }
+  #holdings tr.holding-row td .range { flex: 1; }
+  /* Group headers and total rows stay as full-width banners, not
+     cards: their cells have no data-label, so they render as blocks
+     and empty cells are hidden instead of leaving blank lines. */
+  #holdings tr.group-header, #holdings tr.total-row { display: block; }
+  #holdings tr.group-header td, #holdings tr.total-row td {
+    display: block; max-width: none; width: 100%;
+  }
+  #holdings tr.total-row td:empty { display: none; }
+  #holdings tr.total-row td::before { content: none; }
+  .panel-head { flex-direction: column; align-items: flex-start; gap: 8px; }
+  .card strong { font-size: 18px; }
+}
+
 #growth-ranges button.active { background: #1f6feb; color: #fff; border-color: #1f6feb; }
 #watch-list li { margin: 6px 0; }
 #alloc-chart { max-width: 320px; height: auto; }

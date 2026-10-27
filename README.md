@@ -13,9 +13,12 @@ not buy or sell anything. There are no trading endpoints in this codebase.
 
 Columns, in order: Symbol | Last price | Today's gain/loss | Total
 gain/loss | Current value | % of account | Quantity | Cost basis |
-52-week range. Click a column header to sort. Holdings are grouped by
+Day range | 52-week range. Click a column header to sort. Holdings are grouped by
 account, each group has its own Account total row, and the table footer
-is the overall total.
+is the overall total. On a phone-width screen (≤640px) the table stops
+scrolling sideways: each holding row becomes a card with the column
+name shown before its value, and group/total rows stay as full-width
+banners.
 
 **52-week range: yes, via API.** Yahoo's chart meta returns
 `fiftyTwoWeekLow` / `fiftyTwoWeekHigh` directly, and fin_dash stores them
@@ -141,10 +144,77 @@ normalised before matching.
      shown as live.
    - If no provider is reachable, the imported/manual price is used.
 
-Plaid brokerage sync is **not** in this self-hosted version yet — that was
-the hosted app's next step and needs a Plaid Link connection, not a key in
-this repo. Do not put brokerage credentials, API keys, or real exports in
+## Plaid sync (self-hosted, no dashboard login)
+
+Plaid sync is now in this self-hosted version, with its own Plaid
+developer account — Muse's Plaid connection does **not** transfer to
+your Mac, and no dashboard login is added (Plaid Link itself is the
+brokerage authentication step):
+
+1. Create a Plaid developer account at dashboard.plaid.com and create
+   an app. Start in **sandbox** — free test institutions, no real money.
+2. Copy `.env.example` to `.env` (gitignored) and set
+   `PLAID_CLIENT_ID`, `PLAID_SECRET`, and `PLAID_ENV=sandbox`.
+   Restart the server.
+3. In the dashboard's Plaid panel, pick an owner, click **Connect
+   brokerage via Plaid**, complete Link (in sandbox, use Plaid's test
+   credentials), then click **Sync Plaid holdings**.
+4. Sync creates accounts named “Institution — Account (Plaid)” and
+   merges on account + symbol, so re-syncing updates instead of
+   duplicating. Do **not** also CSV-import the same brokerage under a
+   different account name, or the holding will appear twice.
+5. Only move to `PLAID_ENV=development` (up to 100 real items, free)
+   or `production` (paid, requires Plaid approval) after sandbox works.
+
+Plaid cost basis is treated as a **total** cost (divided by quantity
+for storage, like Fidelity's Cost Basis Total). Access tokens are
+stored in the local `plaid_tokens.json` file (gitignored, mode 0600),
+**not** in the database and **not** in the repo — so a database
+backup does not back them up; copy that file separately if you need
+it. Do not put brokerage credentials, API keys, or real exports in
 this repo.
+
+## PWA / Add to Home Screen (iPhone, no login)
+
+The page links a `static/manifest.json` and an SVG icon, with
+`apple-mobile-web-app-capable` set, so Safari's Share → Add to Home
+Screen opens fin_dash full-screen, without Safari chrome. No service
+worker is registered on purpose — a cached shell could serve stale
+prices. The icon is SVG (the GitHub snapshot push accepts UTF-8
+files only, so no PNG icon is in the repo); iOS may fall back to a
+page screenshot for the Home Screen icon in some versions, while the
+full-screen behaviour still works.
+
+## Export and backup
+
+- **Export CSV** (`GET /api/export?owner=all|<id>`) downloads the
+  holdings the dashboard currently shows, with computed last price,
+  current value, total gain/loss, and today's gain/loss.
+- **Download backup** (`GET /api/backup`) downloads the whole SQLite
+  database via the online backup API, so it is consistent while the
+  server is running. It contains holdings, accounts, quotes, and the
+  history cache — but **not** Plaid tokens (see above).
+
+## History cache (faster loads)
+
+Daily OHLCV history is cached in `history_cache` for one UTC day,
+with `history_meta` recording the fetch date. The growth chart and
+the detail view used to fetch the same 1-year history twice per
+load; a second load on the same day now reads the cache, and the
+growth chart no longer re-fetches on every owner-tab switch. The
+first load of a day still fetches fresh history, like quotes.
+
+## Symbol detail: beta and market cap
+
+Clicking a holding shows its price + volume chart, day/52-week
+ranges, and — best-effort, from Nasdaq's public quote summary
+(no key) — **beta and market cap**, plus sector/industry when
+Nasdaq publishes them. Yahoo's quote endpoints now return 401
+without a crumb, so they are not used for this. When Nasdaq does
+not publish beta or market cap for a symbol, the detail view omits
+them instead of estimating them. Market cap goes through the same
+money formatter as every other dollar amount, so the eye mask hides
+it too.
 
 ## Run it
 
@@ -159,15 +229,20 @@ Data is stored in `fin_dash.db` (SQLite, gitignored, created on first run).
 ## API (view + data entry only)
 
 - `GET /api/dashboard?owner=all|<owner_id>` — totals + holdings
-- `GET /api/symbol/<SYMBOL>` — cached quote + daily price/volume history
+- `GET /api/symbol/<SYMBOL>` — cached quote + daily price/volume history + beta / market cap / sector (best-effort, Nasdaq)
 - `POST /api/accounts`, `POST /api/holdings`, `DELETE /api/holdings/<id>`
 - `POST /api/import` (multipart `file`, `owner_id`, `account_name`;
   `?preview=1` returns the first 20 parsed rows without writing)
 - `POST /api/refresh` — refresh all cached quotes
 - `POST /api/owners/<id>/rename`
+- `GET /api/export?owner=all|<id>` — holdings CSV download
+- `GET /api/backup` — SQLite database download (no Plaid tokens)
+- `GET /api/plaid/status`, `POST /api/plaid/link-token`, `POST /api/plaid/exchange`, `POST /api/plaid/sync` — Plaid Link + Investments holdings sync (needs `PLAID_CLIENT_ID` / `PLAID_SECRET` in a local `.env`)
 
 ## What is not here
 
-No buy, sell, order, or brokerage-login code. Recommendations in the
-hosted dashboard are rule-based observations (concentration, allocation),
-not personalised investment advice, and no returns are promised.
+No buy, sell, or order code, and no dashboard login. The only
+brokerage-authentication code is Plaid Link, which is read-only
+(holdings only) and is the brokerages' own login flow. Rule-based
+observations (concentration, allocation) are not personalised
+investment advice, and no returns are promised.
