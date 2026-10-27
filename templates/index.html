@@ -9,7 +9,7 @@
 <body>
 <header>
   <h1>fin_dash</h1>
-  <p class="sub">View-only household dashboard. No buy / sell actions. Prices may be delayed — see the provider label on each holding.</p>
+  <p class="sub">View-only household dashboard. No buy / sell actions. Prices may be delayed.</p>
 </header>
 
 <nav id="owner-tabs" aria-label="Portfolio owner"></nav>
@@ -38,6 +38,7 @@
     <tfoot></tfoot>
   </table></div>
   <p id="detail-hint">Click a holding row for its price + volume chart. 52-week range comes from the market-data API on refresh (Yahoo fiftyTwoWeekLow/High); without a quote it shows as a dash, not an estimate.</p>
+  <p class="small">Formulas: Total gain/loss = Current value − Cost basis (total, i.e. cost per share × quantity). Today's gain/loss = (Last price − Previous close) × Quantity. Gains are green, losses are red.</p>
 </section>
 
 <section class="panel" id="detail" hidden>
