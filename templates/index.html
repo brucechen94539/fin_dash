@@ -31,13 +31,14 @@
       <th data-sort="pct_of_account" data-label="% of account">% of account</th>
       <th data-sort="quantity" data-label="Quantity">Quantity</th>
       <th data-sort="cost_total" data-label="Cost basis">Cost basis</th>
+      <th data-label="Day range">Day range</th>
       <th data-label="52-week range">52-week range</th>
       <th></th>
     </tr></thead>
     <tbody></tbody>
     <tfoot></tfoot>
   </table></div>
-  <p id="detail-hint">Click a holding row for its price + volume chart. 52-week range comes from the market-data API on refresh (Yahoo fiftyTwoWeekLow/High); without a quote it shows as a dash, not an estimate.</p>
+  <p id="detail-hint">Click a holding row for its price + volume chart. Last price is refreshed from the market-data API on the first dashboard load of the day (intraday price while the market is open, the close once it has closed; free tiers are delayed, not real-time) — it is not the price frozen in your import file. Day range and 52-week range come from the same API pull (Yahoo regularMarketDayLow/High and fiftyTwoWeekLow/High); without a quote they show as a dash, not an estimate.</p>
   <p class="small">Formulas: Total gain/loss = Current value − Cost basis (total, i.e. cost per share × quantity). Today's gain/loss = (Last price − Previous close) × Quantity. Gains are green, losses are red.</p>
 </section>
 
@@ -64,7 +65,7 @@
     <button type="submit">Import</button>
     <span id="import-result"></span>
   </form>
-  <p class="small">CSV columns accepted (flexible names): Symbol/Ticker, Shares/Quantity, Cost Basis Total / Average Cost Basis (Fidelity), Cost Basis/Avg Cost, Last Price/Price, Account, Name/Description. Re-importing the same account + symbol updates it instead of duplicating it. See <a href="/static/sample_holdings.csv" download>sample_holdings.csv</a> or the Fidelity-format sample in the repo (<code>sample_fidelity.csv</code>) for the format.</p>
+  <p class="small">Import any brokerage export — Fidelity, Schwab, E*TRADE, or a generic CSV — and the dashboard converts it to Fidelity format automatically (Schwab's Cost Basis is treated as a total, E*TRADE's Total Cost / Price Paid as total / per-share, title lines and cash/total rows skipped). No separate conversion step is needed. Re-importing the same account + symbol updates it instead of duplicating it. See <a href="/static/sample_holdings.csv" download>sample_holdings.csv</a> or the Fidelity-format sample in the repo (<code>sample_fidelity.csv</code>) for the format.</p>
 </section>
 
 <script src="/static/app.js"></script>

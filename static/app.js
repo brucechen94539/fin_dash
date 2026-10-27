@@ -2,9 +2,10 @@
 // No trading calls exist on the server. Column order matches the
 // Fidelity positions table: Symbol | Last price | Today's gain/loss |
 // Total gain/loss | Current value | % of account | Quantity |
-// Cost basis | 52-week range. The 52-week range comes from the API
-// (Yahoo fiftyTwoWeekLow/High, stored on refresh); without a quote it
-// shows as a dash, never as an invented number.
+// Cost basis | Day range | 52-week range. Day range and 52-week range
+// come from the API (Yahoo regularMarketDayLow/High and
+// fiftyTwoWeekLow/High, stored on refresh); without a quote they
+// show as a dash, never as an invented number.
 let owner = "all";
 let owners = [];
 let lastData = null;
@@ -26,6 +27,13 @@ function rangeCell(h) {
     `<span class="range-labels"><span>${money(h.week_low)}</span><span>${money(h.week_high)}</span></span></div>`;
 }
 
+function dayRangeCell(h) {
+  if (h.day_low == null || h.day_high == null || h.day_position == null) return "—";
+  const left = Math.max(0, Math.min(100, h.day_position * 100));
+  return `<div class="range"><span class="range-bar"><i style="left:${left}%"></i></span>` +
+    `<span class="range-labels"><span>${money(h.day_low)}</span><span>${money(h.day_high)}</span></span></div>`;
+}
+
 function holdingRow(h) {
   // Full company name is a hover tooltip only, not a second line — the
   // ticker column stays narrow (tickers are at most ~4-5 characters).
@@ -38,6 +46,7 @@ function holdingRow(h) {
     <td class="num">${h.pct_of_account.toFixed(2)}%</td>
     <td class="num">${num(h.quantity)}</td>
     <td class="num">${money(h.cost_total)}<span class="sub-line">${money(h.cost_per_share)} / Share</span></td>
+    <td>${dayRangeCell(h)}</td>
     <td>${rangeCell(h)}</td>
     <td><button data-del="${h.id}">Remove</button></td>
   </tr>`;
@@ -47,7 +56,7 @@ function totalRow(label, today, total, value) {
   return `<tr class="total-row"><td><strong>${label}</strong></td><td></td>` +
     `<td class="num ${cls(today)}"><strong>${moneySigned(today)}</strong></td>` +
     `<td class="num ${cls(total)}"><strong>${moneySigned(total)}</strong></td>` +
-    `<td class="num"><strong>${money(value)}</strong></td><td colspan="5"></td></tr>`;
+    `<td class="num"><strong>${money(value)}</strong></td><td colspan="6"></td></tr>`;
 }
 
 function renderHoldings() {
@@ -72,11 +81,11 @@ function renderHoldings() {
     const tv = g.rows.reduce((s, h) => s + h.current_value, 0);
     const tt = g.rows.reduce((s, h) => s + h.today_gain, 0);
     const tg = g.rows.reduce((s, h) => s + h.total_gain, 0);
-    html += `<tr class="group-header"><td colspan="10">${g.account} — ${g.owner}</td></tr>`;
+    html += `<tr class="group-header"><td colspan="11">${g.account} — ${g.owner}</td></tr>`;
     html += g.rows.map(holdingRow).join("");
     html += totalRow("Account total", tt, tg, tv);
   }
-  if (!html) html = `<tr><td colspan="10">No holdings yet — add one below or import a CSV/XLSX export.</td></tr>`;
+  if (!html) html = `<tr><td colspan="11">No holdings yet — add one below or import a CSV/XLSX export.</td></tr>`;
   $("#holdings tbody").innerHTML = html;
   const t = d.totals;
   $("#holdings tfoot").innerHTML = totalRow("Account total", t.day_move, t.gain, t.value);
@@ -157,8 +166,10 @@ async function showDetail(symbol) {
   $("#detail-title").textContent = symbol;
   const range = (d.week_low != null && d.week_high != null)
     ? ` • 52-week range ${money(d.week_low)} – ${money(d.week_high)}` : "";
+  const day = (d.day_low != null && d.day_high != null)
+    ? ` • Day range ${money(d.day_low)} – ${money(d.day_high)}` : "";
   $("#detail-meta").textContent = d.quote
-    ? `Last quote ${money(d.quote.price)} via ${d.quote.provider} at ${d.quote.as_of || "unknown"}${range}`
+    ? `Last quote ${money(d.quote.price)} via ${d.quote.provider} at ${d.quote.as_of || "unknown"}${day}${range}`
     : "No cached quote yet — click Refresh quotes.";
   drawChart(d.history);
 }

@@ -91,12 +91,15 @@ def init_db():
         CREATE TABLE IF NOT EXISTS quotes (
             symbol TEXT PRIMARY KEY,
             price REAL, change REAL, change_pct REAL, volume REAL,
-            provider TEXT, as_of TEXT, week_low REAL, week_high REAL
+            provider TEXT, as_of TEXT, week_low REAL, week_high REAL,
+            day_low REAL, day_high REAL
         );
         """
     )
-    # Migration for databases created before the 52-week columns existed.
-    for _col in ("week_low REAL", "week_high REAL"):
+    # Migration for databases created before the 52-week / day-range
+    # columns existed.
+    for _col in ("week_low REAL", "week_high REAL",
+                 "day_low REAL", "day_high REAL"):
         try:
             db.execute(f"ALTER TABLE quotes ADD COLUMN {_col}")
         except sqlite3.OperationalError:
@@ -137,14 +140,48 @@ def _yahoo_chart(symbol, range_="1y"):
         return json.loads(resp.read().decode("utf-8"))
 
 
+def _yahoo_quote(symbol):
+    """Yahoo quote dict, or None. This is the source for Last price,
+    the 52-week range AND the day range: meta carries
+    regularMarketPrice (intraday while the market is open, the close
+    otherwise), regularMarketDayLow/High for today, and
+    fiftyTwoWeekLow/High. If the day fields are absent, fall back to
+    the last daily bar in the 5-day chart."""
+    result = _yahoo_chart(symbol, "5d")["chart"]["result"][0]
+    meta = result["meta"]
+    price = meta.get("regularMarketPrice")
+    prev = meta.get("chartPreviousClose")
+    if not (price and prev):
+        return None
+    day_low = meta.get("regularMarketDayLow")
+    day_high = meta.get("regularMarketDayHigh")
+    if day_low is None or day_high is None:
+        try:
+            q = result["indicators"]["quote"][0]
+            lows = [v for v in q["low"] if v is not None]
+            highs = [v for v in q["high"] if v is not None]
+            day_low = day_low if day_low is not None else (lows[-1] if lows else None)
+            day_high = day_high if day_high is not None else (highs[-1] if highs else None)
+        except Exception:
+            pass
+    return {"price": price, "change": price - prev,
+            "change_pct": (price - prev) / prev * 100,
+            "volume": meta.get("regularMarketVolume"),
+            "provider": "yahoo-delayed",
+            "week_low": meta.get("fiftyTwoWeekLow"),
+            "week_high": meta.get("fiftyTwoWeekHigh"),
+            "day_low": day_low, "day_high": day_high}
+
+
 def fetch_quote(symbol):
     """Return a dict, or None.
 
     52-week range: YES, there is a public-API way. Yahoo's chart meta
     carries fiftyTwoWeekLow / fiftyTwoWeekHigh directly, so no separate
-    endpoint is needed. Finnhub's quote endpoint does not include it, so
-    with a Finnhub key the range is left null here and the detail view
-    falls back to the min/max of the 1-year history (see symbol_detail).
+    endpoint is needed. Finnhub's quote endpoint does not include it
+    (or a day range), so with a Finnhub key Yahoo is still consulted
+    best-effort to fill day/week ranges, and the detail view falls back
+    to the min/max of the 1-year history (see symbol_detail).
     """
     symbol = symbol.upper()
     if FINNHUB_KEY:
@@ -153,22 +190,22 @@ def fetch_quote(symbol):
                 f"https://finnhub.io/api/v1/quote?symbol={symbol}&token={FINNHUB_KEY}"
             )
             if q.get("c"):
-                return {"price": q["c"], "change": q.get("d"),
-                        "change_pct": q.get("dp"), "volume": None,
-                        "provider": "finnhub", "week_low": None, "week_high": None}
+                out = {"price": q["c"], "change": q.get("d"),
+                       "change_pct": q.get("dp"), "volume": None,
+                       "provider": "finnhub", "week_low": None, "week_high": None,
+                       "day_low": None, "day_high": None}
+                try:
+                    y = _yahoo_quote(symbol)
+                    if y:
+                        out.update({k: y[k] for k in
+                                    ("week_low", "week_high", "day_low", "day_high")})
+                except Exception:
+                    pass
+                return out
         except Exception:
             pass  # fall through to Yahoo
     try:
-        meta = _yahoo_chart(symbol, "5d")["chart"]["result"][0]["meta"]
-        price = meta.get("regularMarketPrice")
-        prev = meta.get("chartPreviousClose")
-        if price and prev:
-            return {"price": price, "change": price - prev,
-                    "change_pct": (price - prev) / prev * 100,
-                    "volume": meta.get("regularMarketVolume"),
-                    "provider": "yahoo-delayed",
-                    "week_low": meta.get("fiftyTwoWeekLow"),
-                    "week_high": meta.get("fiftyTwoWeekHigh")}
+        return _yahoo_quote(symbol)
     except Exception:
         pass
     try:
@@ -182,10 +219,58 @@ def fetch_quote(symbol):
                     "change_pct": ((close - prev_close) / prev_close * 100
                                    if prev_close else None),
                     "volume": float(last[5]) if len(last) > 5 and last[5] else None,
-                    "provider": "stooq-eod", "week_low": None, "week_high": None}
+                    "provider": "stooq-eod", "week_low": None, "week_high": None,
+                    "day_low": None, "day_high": None}
     except Exception:
         pass
     return None
+
+
+def _upsert_quote(db, symbol, q):
+    now = datetime.now(timezone.utc).isoformat()
+    db.execute(
+        """INSERT INTO quotes (symbol, price, change, change_pct, volume,
+                                provider, as_of, week_low, week_high,
+                                day_low, day_high)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(symbol) DO UPDATE SET price=excluded.price,
+             change=excluded.change, change_pct=excluded.change_pct,
+             volume=excluded.volume, provider=excluded.provider,
+             as_of=excluded.as_of, week_low=excluded.week_low,
+             week_high=excluded.week_high, day_low=excluded.day_low,
+             day_high=excluded.day_high""",
+        (symbol, q["price"], q["change"], q["change_pct"], q["volume"],
+         q["provider"], now, q.get("week_low"), q.get("week_high"),
+         q.get("day_low"), q.get("day_high")))
+
+
+def _refresh_symbols(db, symbols):
+    """Fetch and store quotes for symbols; returns (refreshed, failed)."""
+    refreshed = failed = 0
+    for sym in symbols:
+        q = fetch_quote(sym)
+        if q:
+            _upsert_quote(db, sym, q)
+            refreshed += 1
+        else:
+            failed += 1
+    db.commit()
+    return refreshed, failed
+
+
+def _quotes_need_refresh(db, symbols):
+    """Symbols with no quote, or a quote stamped on an earlier UTC day.
+    That is the 'when started, Last price is today's price' rule: the
+    first dashboard load of a day pulls today's intraday price (or the
+    close, once the market has closed), later loads reuse the cache
+    until the user hits Refresh quotes."""
+    today = datetime.now(timezone.utc).date().isoformat()
+    stale = []
+    for sym in symbols:
+        r = db.execute("SELECT as_of FROM quotes WHERE symbol=?", (sym,)).fetchone()
+        if r is None or not r["as_of"] or not str(r["as_of"]).startswith(today):
+            stale.append(sym)
+    return stale
 
 
 def fetch_history(symbol):
@@ -268,6 +353,17 @@ def dashboard():
         params.append(owner)
     q += " ORDER BY o.id, a.name, h.symbol"
     holdings = [row(r) for r in db.execute(q, params)]
+    # Last price must be today's price when the dashboard is opened:
+    # refresh any symbol with no quote or a quote from an earlier day.
+    # A failed fetch keeps the previous quote / manual price, never blanks it.
+    if holdings:
+        try:
+            stale = _quotes_need_refresh(
+                db, sorted({h["symbol"] for h in holdings}))
+            if stale:
+                _refresh_symbols(db, stale)
+        except Exception:
+            pass
     quotes = {r["symbol"]: row(r) for r in db.execute("SELECT * FROM quotes")}
     total_value = total_cost = day_move = 0.0
     accounts = {}
@@ -300,6 +396,12 @@ def dashboard():
             (price - h["week_low"]) / (h["week_high"] - h["week_low"])
             if h["week_low"] is not None and h["week_high"] is not None
             and h["week_high"] > h["week_low"] else None)
+        h["day_low"] = quote["day_low"] if quote else None
+        h["day_high"] = quote["day_high"] if quote else None
+        h["day_position"] = (
+            (price - h["day_low"]) / (h["day_high"] - h["day_low"])
+            if h["day_low"] is not None and h["day_high"] is not None
+            and h["day_high"] > h["day_low"] else None)
         h["quote_provider"] = quote["provider"] if quote else "manual"
         h["quote_as_of"] = quote["as_of"] if quote else None
         total_value += h["value"]
@@ -334,14 +436,21 @@ def symbol_detail(symbol):
     # Fallback 52-week range from the 1-year history when the quote
     # provider did not supply one (e.g. Finnhub).
     week_low = week_high = None
+    day_low = day_high = None
     if quote:
         week_low, week_high = quote.get("week_low"), quote.get("week_high")
+        day_low, day_high = quote.get("day_low"), quote.get("day_high")
     if (week_low is None or week_high is None) and history:
         week_low = min(h["low"] for h in history if h["low"])
         week_high = max(h["high"] for h in history if h["high"])
+    if (day_low is None or day_high is None) and history:
+        # Last history bar is today's (or the last trading day's) bar.
+        day_low = history[-1]["low"]
+        day_high = history[-1]["high"]
     return jsonify({
         "symbol": symbol.upper(), "quote": quote, "history": history,
         "week_low": week_low, "week_high": week_high,
+        "day_low": day_low, "day_high": day_high,
     })
 
 
@@ -422,6 +531,114 @@ def _pick(row_dict, *names):
     return None
 
 
+_NON_POSITION_SYMBOLS = {"CASH", "TOTAL", "CASH_INVESTMENTS"}
+
+
+def _is_position_row(r, symbol):
+    """Drop cash/total/footer rows from brokerage exports."""
+    s = (symbol or "").strip().upper()
+    if s in _NON_POSITION_SYMBOLS:
+        return False
+    low = (symbol or "").strip().lower()
+    if "cash" in low and "invest" in low or low == "positions total":
+        return False
+    return True
+
+
+def _normalize_broker_rows(rows):
+    """Persistent brokerage conversion: any recognised export is
+    rewritten to Fidelity-shaped rows BEFORE import, so the user never
+    has to convert a file by hand again.
+
+    Detected formats (by normalised header set):
+      fidelity: cost_basis_total + average_cost_basis (already Fidelity)
+      schwab:   qty_quantity + mkt_val_market_value. Its 'Cost Basis'
+                is a TOTAL, not per-share — the old generic mapping
+                treated a bare cost_basis as per-share, which is why a
+                direct Schwab import would misstate cost. It is
+                rewritten to cost_basis_total here.
+      etrade:   price_paid_ + total_cost. Total Cost -> cost_basis_total,
+                Price Paid -> average_cost_basis. Description/Type are
+                absent from E*TRADE exports and stay blank.
+      generic:  anything else — import_rows' alias picks handle it.
+    Returns (format, rows). Schwab/E*TRADE title lines and cash/total
+    rows are dropped here; the header-row search in _csv_rows_from_text
+    / _xlsx_rows_from_sheet drops Schwab's title line."""
+    if not rows:
+        return "generic", rows
+    # Drop blank / footer / disclaimer lines (Fidelity exports end with
+    # them) so they do not inflate the import's skipped count.
+    rows = [r for r in rows if _pick(r, "symbol", "ticker")]
+    keys = set()
+    for r in rows:
+        keys.update(r.keys())
+    if "qty_quantity" in keys or "mkt_val_market_value" in keys:
+        fmt = "schwab"
+    elif "price_paid_" in keys and "total_cost" in keys:
+        fmt = "etrade"
+    elif "cost_basis_total" in keys:
+        fmt = "fidelity"
+    else:
+        return "generic", rows
+    out = []
+    for r in rows:
+        symbol = _pick(r, "symbol", "ticker")
+        if symbol and not _is_position_row(r, symbol):
+            continue
+        if fmt == "schwab":
+            out.append({
+                "symbol": symbol,
+                "description": _pick(r, "description") or "",
+                "quantity": _pick(r, "qty_quantity", "quantity", "qty"),
+                "last_price": _pick(r, "price", "last_price"),
+                "current_value": _pick(r, "mkt_val_market_value"),
+                "cost_basis_total": _pick(r, "cost_basis"),
+                "percent_of_account": _pick(r, "_of_acct__of_account"),
+                "type": _pick(r, "asset_type") or "",
+            })
+        elif fmt == "etrade":
+            out.append({
+                "symbol": symbol,
+                "description": _pick(r, "description") or "",
+                "quantity": _pick(r, "qty_", "quantity", "qty"),
+                "last_price": _pick(r, "last_price_", "last_price"),
+                "current_value": _pick(r, "value_"),
+                "cost_basis_total": _pick(r, "total_cost"),
+                "average_cost_basis": _pick(r, "price_paid_", "price_paid"),
+            })
+        else:
+            out.append(r)
+    return fmt, out
+
+
+def _csv_rows_from_text(text):
+    """Find the real header row (Schwab exports start with a title line
+    and a blank line) and return dict rows with normalised headers."""
+    parsed = list(csv.reader(io.StringIO(text)))
+    for i, row in enumerate(parsed):
+        normed = [_norm_header(c) for c in row]
+        if "symbol" in normed or "ticker" in normed:
+            headers = normed
+            return [{headers[j]: (r[j] if j < len(r) else "")
+                     for j in range(len(headers))}
+                    for r in parsed[i + 1:]]
+    # No symbol header found: fall back to DictReader (first row as header).
+    reader = csv.DictReader(io.StringIO(text))
+    return [{_norm_header(k): v for k, v in (r or {}).items()} for r in reader]
+
+
+def _xlsx_rows_from_sheet(ws):
+    """Same header-row search as CSV, for XLSX exports."""
+    rows = list(ws.iter_rows(values_only=True))
+    for i, row in enumerate(rows):
+        normed = [_norm_header(c) for c in row]
+        if "symbol" in normed or "ticker" in normed:
+            headers = normed
+            return [dict(zip(headers, r)) for r in rows[i + 1:]]
+    headers = [_norm_header(c) for c in rows[0]] if rows else []
+    return [dict(zip(headers, r)) for r in rows[1:]]
+
+
 def import_rows(rows, owner_id, account_name):
     """rows: list of dicts with normalised headers. Returns counts."""
     db = get_db()
@@ -437,7 +654,7 @@ def import_rows(rows, owner_id, account_name):
     created = updated = skipped = 0
     for r in rows:
         symbol = _pick(r, "symbol", "ticker")
-        shares = _pick(r, "shares", "quantity", "qty")
+        shares = _pick(r, "shares", "quantity", "qty", "qty_quantity", "qty_")
         if not symbol or shares is None:
             skipped += 1
             continue
@@ -454,10 +671,11 @@ def import_rows(rows, owner_id, account_name):
             if shares is None:
                 skipped += 1
                 continue
-            cost_total_raw = _pick(r, "cost_basis_total", "total_cost_basis")
+            cost_total_raw = _pick(r, "cost_basis_total", "total_cost_basis",
+                                   "total_cost")
             avg_raw = _pick(r, "average_cost_basis", "avg_cost_basis",
                             "average_cost", "avg_cost",
-                            "cost_basis_per_share")
+                            "cost_basis_per_share", "price_paid", "price_paid_")
             legacy_raw = _pick(r, "cost_basis", "cost")
             if cost_total_raw is not None:
                 total = _money(cost_total_raw)
@@ -466,10 +684,14 @@ def import_rows(rows, owner_id, account_name):
                 cost = _money(avg_raw) or 0
             elif legacy_raw is not None:
                 # Legacy sample_holdings.csv: 'Cost Basis' is per-share.
+                # (Schwab's 'Cost Basis' is a TOTAL, but Schwab rows are
+                # rewritten to cost_basis_total by _normalize_broker_rows
+                # before they reach here, so this branch never sees them.)
                 cost = _money(legacy_raw) or 0
             else:
                 cost = 0
-            price = _money(_pick(r, "last_price", "price", "current_price"))
+            price = _money(_pick(r, "last_price", "last_price_", "price",
+                                 "current_price"))
         except (ValueError, TypeError):
             skipped += 1
             continue
@@ -510,51 +732,34 @@ def import_file():
     try:
         if name.endswith(".csv"):
             text = f.read().decode("utf-8-sig")
-            reader = csv.DictReader(io.StringIO(text))
-            rows = [{_norm_header(k): v for k, v in (r or {}).items()} for r in reader]
+            rows = _csv_rows_from_text(text)
         elif name.endswith((".xlsx", ".xls")):
             try:
                 import openpyxl
             except ImportError:
                 return jsonify({"error": "XLSX needs openpyxl: pip install openpyxl"}), 400
             wb = openpyxl.load_workbook(io.BytesIO(f.read()), read_only=True, data_only=True)
-            ws = wb.active
-            it = ws.iter_rows(values_only=True)
-            headers = [_norm_header(c) for c in next(it)]
-            rows = [dict(zip(headers, r)) for r in it]
+            rows = _xlsx_rows_from_sheet(wb.active)
         else:
             return jsonify({"error": "only .csv and .xlsx are accepted"}), 400
     except Exception as e:
         return jsonify({"error": f"could not parse file: {e}"}), 400
+    # Persistent conversion: normalise to Fidelity shape before preview
+    # or import, whatever brokerage the file came from.
+    detected, rows = _normalize_broker_rows(rows)
     if request.args.get("preview") == "1":
-        return jsonify({"rows": rows[:20], "total_rows": len(rows)})
-    return jsonify(import_rows(rows, int(owner_id), account_name))
+        return jsonify({"rows": rows[:20], "total_rows": len(rows),
+                        "detected_format": detected})
+    result = import_rows(rows, int(owner_id), account_name)
+    result["detected_format"] = detected
+    return jsonify(result)
 
 
 @app.route("/api/refresh", methods=["POST"])
 def refresh_quotes():
     db = get_db()
     symbols = [r["symbol"] for r in db.execute("SELECT DISTINCT symbol FROM holdings")]
-    refreshed = failed = 0
-    now = datetime.now(timezone.utc).isoformat()
-    for sym in symbols:
-        q = fetch_quote(sym)
-        if q:
-            db.execute(
-                """INSERT INTO quotes (symbol, price, change, change_pct, volume,
-                                        provider, as_of, week_low, week_high)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(symbol) DO UPDATE SET price=excluded.price,
-                     change=excluded.change, change_pct=excluded.change_pct,
-                     volume=excluded.volume, provider=excluded.provider,
-                     as_of=excluded.as_of, week_low=excluded.week_low,
-                     week_high=excluded.week_high""",
-                (sym, q["price"], q["change"], q["change_pct"], q["volume"],
-                 q["provider"], now, q["week_low"], q["week_high"]))
-            refreshed += 1
-        else:
-            failed += 1
-    db.commit()
+    refreshed, failed = _refresh_symbols(db, symbols)
     return jsonify({"refreshed": refreshed, "failed": failed,
                     "provider": "finnhub" if FINNHUB_KEY else "yahoo-delayed"})
 
