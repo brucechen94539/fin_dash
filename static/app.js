@@ -16,8 +16,28 @@ let sortKey = "symbol";
 let sortDir = 1;
 
 const $ = (s) => document.querySelector(s);
-const money = (n) => "$" + (n || 0).toLocaleString(undefined, {maximumFractionDigits: 2, minimumFractionDigits: 2});
-const moneySigned = (n) => (n < 0 ? "-$" : "+$") + Math.abs(n || 0).toLocaleString(undefined, {maximumFractionDigits: 2, minimumFractionDigits: 2});
+// Value masking (eye toggle): when on, every dollar amount rendered
+// through money()/moneySigned() becomes a fixed "****" — fixed length,
+// so the number of digits (and therefore the magnitude) does not leak
+// the way "$***,***.**" would. Percentages, quantities, symbols and
+// indexed growth (100-based, not dollars) stay visible by design;
+// this masks monetary values only, as requested, and it is a display
+// mask only — the server still returns real values to the browser.
+let masked = false;
+try { masked = localStorage.getItem("fin_dash_masked") === "1"; } catch {}
+const money = (n) => masked ? "****"
+  : "$" + (n || 0).toLocaleString(undefined, {maximumFractionDigits: 2, minimumFractionDigits: 2});
+const moneySigned = (n) => masked ? "****"
+  : (n < 0 ? "-$" : "+$") + Math.abs(n || 0).toLocaleString(undefined, {maximumFractionDigits: 2, minimumFractionDigits: 2});
+
+function updateMaskButton() {
+  const b = $("#mask-toggle");
+  if (!b) return;
+  // Open eye = values are showing, closed eye = values are masked.
+  b.textContent = masked ? "👁️ Show values" : "🙈 Mask values";
+  b.setAttribute("aria-pressed", masked ? "true" : "false");
+  b.title = masked ? "Show monetary values" : "Mask monetary values with asterisks";
+}
 const pct = (n) => `${n < 0 ? "" : "+"}${(n || 0).toFixed(2)}%`;
 const cls = (n) => (n < 0 ? "neg" : "pos");
 const num = (n) => (n || 0).toLocaleString(undefined, {maximumFractionDigits: 3});
@@ -251,7 +271,8 @@ function drawChart(history) {
   });
   ctx.stroke();
   ctx.fillStyle = "#333";
-  ctx.fillText(`${history[0].date} → ${history[history.length - 1].date}  •  ${min.toFixed(2)} – ${max.toFixed(2)}`, pad, 18);
+  const minMax = masked ? "**** – ****" : `${min.toFixed(2)} – ${max.toFixed(2)}`;
+  ctx.fillText(`${history[0].date} → ${history[history.length - 1].date}  •  ${minMax}`, pad, 18);
 }
 
 async function showDetail(symbol) {
@@ -273,6 +294,15 @@ $("#refresh").addEventListener("click", async () => {
   alert(`Refreshed ${r.refreshed}, failed ${r.failed} (provider: ${r.provider})`);
   load();
 });
+
+// Eye toggle: flip the mask, remember it for next visit, re-render.
+$("#mask-toggle").addEventListener("click", () => {
+  masked = !masked;
+  try { localStorage.setItem("fin_dash_masked", masked ? "1" : "0"); } catch {}
+  updateMaskButton();
+  load();
+});
+updateMaskButton();
 
 $("#add-form").addEventListener("submit", async (e) => {
   e.preventDefault();

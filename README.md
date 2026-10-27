@@ -50,6 +50,19 @@ single line — headers like "Today's gain/loss" wrap onto two lines
 rather than stretching the table. The symbol column stays narrower
 (72px), and merged group/total rows are exempt from the cap.
 
+## Masking monetary values (eye toggle)
+
+The eye button at the top (🙈 Mask values / 👁️ Show values)
+replaces every dollar amount on the page with a fixed `****` —
+KPI cards, holdings table (last price, gains, current value, cost
+basis, day/52-week ranges), allocation legend, and detail view —
+so the number of digits cannot leak the magnitude. Percentages,
+quantities, symbols, and the 100-indexed growth chart stay visible.
+The choice persists in the browser (`localStorage`) across visits.
+This is a display mask only: the server still returns real values
+to the browser, so it is for shoulder-surfing privacy, not a
+security boundary for someone with browser / network access.
+
 ## Growth vs VOO, allocation, and What to watch
 
 - **Growth vs VOO** (`GET /api/growth?owner=all|<id>`): the current
