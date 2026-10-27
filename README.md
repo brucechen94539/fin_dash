@@ -153,9 +153,14 @@ brokerage authentication step):
 
 1. Create a Plaid developer account at dashboard.plaid.com and create
    an app. Start in **sandbox** — free test institutions, no real money.
-2. Copy `.env.example` to `.env` (gitignored) and set
-   `PLAID_CLIENT_ID`, `PLAID_SECRET`, and `PLAID_ENV=sandbox`.
-   Restart the server.
+2. Copy `.env.example` to `.env` in the same folder as `app.py`
+   (gitignored) and set `PLAID_CLIENT_ID`, `PLAID_SECRET`, and
+   `PLAID_ENV=sandbox`, then run `chmod 600 .env` and restart the
+   server. **app.py loads `.env` itself on startup** (a small stdlib
+   parser, no new dependency, no pip install needed) — no `export`
+   is needed, and a variable already exported in your shell always
+   wins over `.env`. A `.env` in your home folder (`~`) is NOT read;
+   it must sit next to `app.py`.
 3. In the dashboard's Plaid panel, pick an owner, click **Connect
    brokerage via Plaid**, complete Link (in sandbox, use Plaid's test
    credentials), then click **Sync Plaid holdings**.

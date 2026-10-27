@@ -22,6 +22,9 @@ Run:
     pip install -r requirements.txt
     python3 app.py          # http://127.0.0.1:5000, PORT env var to change
     # or:  flask --app app run --port 5000
+    # Secrets (PLAID_CLIENT_ID / PLAID_SECRET, FINNHUB_API_KEY) go in
+    # a .env file next to app.py — app.py loads it on startup, no
+    # export needed, and a real exported variable always wins over .env.
 
 Data lives in fin_dash.db (SQLite, created on first run, gitignored).
 Never commit fin_dash.db, a .env file, an API key, or a real brokerage
@@ -41,6 +44,58 @@ from datetime import datetime, timezone
 from flask import Flask, Response, g, jsonify, request, send_from_directory
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def _load_dotenv():
+    """Load <app-dir>/.env into os.environ, without a new dependency.
+
+    Why this exists: Flask / Python do NOT read a .env file on their
+    own — a .env file sitting next to app.py is inert until something
+    loads it. Previously fin_dash's README said 'set it in .env and
+    restart', which was wrong: only exported environment variables
+    worked. Now app.py loads .env itself on startup, so creating
+    ~/Documents/github/fin_dash/fin_dash/.env and restarting is
+    enough — no export, no shell history containing a secret.
+
+    Rules (same as python-dotenv's defaults, in miniature):
+    - File is <app-dir>/.env only. A .env in the home directory (~)
+      is NOT read — it must live next to app.py, so a stray home
+      .env cannot silently supply credentials to this app.
+    - Lines are KEY=VALUE, '#' comments and blank lines ignored,
+      an optional leading 'export ' is allowed, and single/double
+      quotes around a value are stripped.
+    - A variable already set in the real environment wins: .env
+      never overwrites an exported value. That keeps `export
+      PLAID_ENV=production` (or a CI secret) authoritative.
+    - A missing or unreadable .env is not an error: the app runs
+      exactly as before, with Plaid reporting 'not configured'.
+    - No new dependency is added for this: the parser is ~20 lines
+      of stdlib, so pulling this change needs no pip install."""
+    path = os.path.join(APP_DIR, ".env")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export "):].strip()
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key, value = key.strip(), value.strip()
+        if not key or key in os.environ:
+            continue
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+            value = value[1:-1]
+        os.environ[key] = value
+
+
+_load_dotenv()
+
 DB_PATH = os.environ.get("FIN_DASH_DB", os.path.join(APP_DIR, "fin_dash.db"))
 FINNHUB_KEY = os.environ.get("FINNHUB_API_KEY", "").strip()
 
