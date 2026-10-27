@@ -41,3 +41,7 @@ input, select { padding: 8px; border: 1px solid #cbd3df; border-radius: 8px; }
 .range-bar { display: block; position: relative; height: 2px; background: #cbd3df; margin: 10px 4px 4px; }
 .range-bar i { position: absolute; top: -4px; width: 9px; height: 9px; background: #1c2333; transform: rotate(45deg); }
 .range-labels { display: flex; flex-wrap: wrap; justify-content: space-between; color: #556; font-size: 12px; overflow-wrap: break-word; }
+#growth-ranges button.active { background: #1f6feb; color: #fff; border-color: #1f6feb; }
+#watch-list li { margin: 6px 0; }
+#alloc-chart { max-width: 320px; height: auto; }
+#alloc-legend div { margin: 4px 0; font-size: 13px; }

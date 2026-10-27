@@ -50,6 +50,25 @@ single line — headers like "Today's gain/loss" wrap onto two lines
 rather than stretching the table. The symbol column stays narrower
 (72px), and merged group/total rows are exempt from the cap.
 
+## Growth vs VOO, allocation, and What to watch
+
+- **Growth vs VOO** (`GET /api/growth?owner=all|<id>`): the current
+  holdings' daily value (shares × that day's close, forward-filled)
+  indexed to 100, plotted against VOO over the same dates, with
+  1M / 3M / 6M / 1Y / ALL ranges (re-indexed to 100 at the range
+  start). This is what the current holdings would have done if held
+  over the whole period — not a record of actual purchase dates.
+- **Allocation:** a donut of current value by symbol, across accounts,
+  with a legend showing each symbol's share and value.
+- **What to watch:** rule-based observations computed from the
+  dashboard's own holdings and returned as `watch` on
+  `/api/dashboard` — concentration (a holding at 25%+ of value),
+  the same symbol in multiple accounts, fewer than 3 distinct
+  symbols, a holding down 20%+ in total, a missing (0) cost basis,
+  and no broad index ETF in a small well-known list. These are
+  observations only, never a buy/sell recommendation and never a
+  promised return.
+
 ## Last price and Day range (API)
 
 Last price is **not** the price frozen in the import file. On the

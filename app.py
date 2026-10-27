@@ -414,6 +414,7 @@ def dashboard():
     return jsonify({
         "owners": owners,
         "holdings": holdings,
+        "watch": _watch_flags(holdings, total_value),
         "accounts": accounts,
         "totals": {
             "value": total_value, "cost": total_cost,
@@ -424,6 +425,134 @@ def dashboard():
             "day_move_pct": (day_move / (total_value - day_move) * 100
                              if total_value - day_move else 0),
         },
+    })
+
+
+def _watch_flags(holdings, total_value):
+    """Rule-based observations only — never a buy/sell recommendation
+    and never a promised return. Every flag is computed from the
+    holdings the dashboard already has, so it can be checked."""
+    flags = []
+    if not total_value or total_value <= 0:
+        return flags
+    by_symbol = {}
+    for h in holdings:
+        by_symbol.setdefault(h["symbol"], []).append(h)
+    # Concentration: a single symbol at 25%+ of portfolio value,
+    # aggregated across accounts (a symbol held in two accounts is
+    # one concentration, not two).
+    for sym, rows in by_symbol.items():
+        pct = sum(r["value"] for r in rows) / total_value * 100
+        if pct >= 25:
+            flags.append({
+                "level": "watch",
+                "title": f"Concentration: {sym} is {pct:.1f}% of the portfolio",
+                "detail": "A single symbol above 25% drives most of the portfolio's movement."})
+    # Duplicate: same symbol held in more than one account.
+    for sym, rows in by_symbol.items():
+        accounts = {r["account_name"] for r in rows}
+        if len(accounts) > 1:
+            flags.append({
+                "level": "info",
+                "title": f"Duplicate holding: {sym} in {len(accounts)} accounts",
+                "detail": "Totals combine across accounts, so this is not a double-count — "
+                          "it is a note that the same symbol appears in several places."})
+    # Few distinct holdings.
+    if len(by_symbol) < 3:
+        flags.append({
+            "level": "info",
+            "title": f"Few holdings: {len(by_symbol)} distinct symbol(s)",
+            "detail": "With fewer than 3 distinct symbols, one holding's move dominates."})
+    # Large unrealised loss, and missing cost basis (gains overstated).
+    for h in holdings:
+        if h["total_gain_pct"] <= -20:
+            flags.append({
+                "level": "watch",
+                "title": f"Large unrealised loss: {h['symbol']} {h['total_gain_pct']:.1f}%",
+                "detail": "Total gain/loss is at or below -20% for this holding."})
+        if h["cost_total"] == 0 and h["shares"]:
+            flags.append({
+                "level": "watch",
+                "title": f"Missing cost basis: {h['symbol']}",
+                "detail": "Cost basis is 0, so its gain/loss is overstated until a cost is imported."})
+    # No broad index ETF in a small, well-known set (composition note only).
+    _index_etfs = {"VOO", "SPY", "QQQ", "VTI", "SCHD", "IVV", "SPYM", "SCHX"}
+    if not (_index_etfs & set(by_symbol)):
+        flags.append({
+            "level": "info",
+            "title": "No broad index ETF holding",
+            "detail": "None of the holdings is in a small list of broad index ETFs "
+                      "(VOO, SPY, QQQ, VTI, SCHD, IVV). This is a composition "
+                      "observation, not a suggestion to buy one."})
+    return flags
+
+
+@app.route("/api/growth")
+def growth():
+    """Growth of the CURRENT holdings vs VOO, indexed to 100.
+
+    Portfolio value on each past date = sum(shares * that day's close),
+    forward-filled per symbol. This is what the current holdings would
+    have done if held over the whole period — it is not a record of
+    actual purchase dates, and a symbol that starts trading mid-period
+    joins the series then. VOO is the benchmark, fetched the same way.
+    Returns the full 1-year series; the frontend filters by range."""
+    db = get_db()
+    owner = request.args.get("owner", "all")
+    q = """
+        SELECT h.symbol, h.shares FROM holdings h
+        JOIN accounts a ON a.id = h.account_id
+        JOIN owners o ON o.id = a.owner_id
+    """
+    params = []
+    if owner != "all":
+        q += " WHERE o.id = ?"
+        params.append(owner)
+    shares = {}
+    for r in db.execute(q, params):
+        shares[r["symbol"]] = shares.get(r["symbol"], 0) + r["shares"]
+    if not shares:
+        return jsonify({"dates": [], "portfolio_index": [], "voo_index": [],
+                        "portfolio_growth_pct": 0, "voo_growth_pct": 0,
+                        "start_date": None, "end_date": None,
+                        "symbols_failed": []})
+    histories, failed = {}, []
+    for sym in shares:
+        hist = fetch_history(sym)
+        if hist:
+            histories[sym] = {h["date"]: h["close"] for h in hist}
+        else:
+            failed.append(sym)
+    voo_hist = fetch_history("VOO")
+    voo_map = {h["date"]: h["close"] for h in voo_hist} if voo_hist else {}
+    dates = sorted({d for mp in histories.values() for d in mp} | set(voo_map))
+    series_dates, portfolio_vals, voo_vals = [], [], []
+    last, voo_last = {}, None
+    for d in dates:
+        for sym, mp in histories.items():
+            if d in mp:
+                last[sym] = mp[d]
+        if d in voo_map:
+            voo_last = voo_map[d]
+        if not last or voo_last is None:
+            continue
+        series_dates.append(d)
+        portfolio_vals.append(sum(shares[s] * last[s] for s in last))
+        voo_vals.append(voo_last)
+    if not series_dates:
+        return jsonify({"dates": [], "portfolio_index": [], "voo_index": [],
+                        "portfolio_growth_pct": 0, "voo_growth_pct": 0,
+                        "start_date": None, "end_date": None,
+                        "symbols_failed": failed})
+    base_p, base_v = portfolio_vals[0], voo_vals[0]
+    return jsonify({
+        "dates": series_dates,
+        "portfolio_index": [v / base_p * 100 for v in portfolio_vals],
+        "voo_index": [v / base_v * 100 for v in voo_vals],
+        "portfolio_growth_pct": (portfolio_vals[-1] / base_p - 1) * 100,
+        "voo_growth_pct": (voo_vals[-1] / base_v - 1) * 100,
+        "start_date": series_dates[0], "end_date": series_dates[-1],
+        "symbols_failed": failed,
     })
 
 

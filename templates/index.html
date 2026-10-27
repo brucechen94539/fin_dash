@@ -42,6 +42,35 @@
   <p class="small">Formulas: Total gain/loss = Current value − Cost basis (total, i.e. cost per share × quantity). Today's gain/loss = (Last price − Previous close) × Quantity. Gains are green, losses are red.</p>
 </section>
 
+<section class="panel">
+  <div class="panel-head">
+    <h2>Growth vs VOO</h2>
+    <div id="growth-ranges">
+      <button data-range="1M">1M</button>
+      <button data-range="3M">3M</button>
+      <button data-range="6M">6M</button>
+      <button data-range="1Y" class="active">1Y</button>
+      <button data-range="ALL">ALL</button>
+    </div>
+  </div>
+  <canvas id="growth-chart" width="900" height="300"></canvas>
+  <p id="growth-meta"></p>
+  <p class="small">Growth is based on current holdings held over the whole period, not actual purchase dates. Both series are indexed to 100 at the start of the selected range.</p>
+</section>
+
+<section class="panel">
+  <h2>Allocation</h2>
+  <canvas id="alloc-chart" width="320" height="320"></canvas>
+  <div id="alloc-legend"></div>
+  <p class="small">Share of total current value, by symbol (across accounts).</p>
+</section>
+
+<section class="panel">
+  <h2>What to watch</h2>
+  <p class="small">Rule-based observations only — not investment advice, and not a buy or sell recommendation.</p>
+  <ul id="watch-list"></ul>
+</section>
+
 <section class="panel" id="detail" hidden>
   <h2 id="detail-title"></h2>
   <canvas id="chart" width="900" height="300"></canvas>
