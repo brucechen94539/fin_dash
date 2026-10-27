@@ -69,6 +69,19 @@ rather than stretching the table. The symbol column stays narrower
   observations only, never a buy/sell recommendation and never a
   promised return.
 
+## Database locking (fixed 2026-10-26)
+
+`/api/refresh` used to upsert each quote as it fetched it, holding a
+SQLite write transaction open through the whole slow network loop —
+a second Refresh click (or the dashboard's first-load auto-refresh)
+then failed with `sqlite3.OperationalError: database is locked`.
+Now all quotes are fetched first with no writes open, then upserted
+in one short transaction; connections use WAL mode with a 30s busy
+timeout, and a still-locked refresh returns a clean 503 "database
+busy, please try Refresh again" instead of a 500 traceback. The
+`-wal` / `-shm` sidecar files are covered by `fin_dash.db*` in
+`.gitignore`.
+
 ## Last price and Day range (API)
 
 Last price is **not** the price frozen in the import file. On the

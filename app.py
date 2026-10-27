@@ -50,9 +50,14 @@ app = Flask(__name__, static_folder="static", template_folder="templates")
 # ---------------------------------------------------------------- database
 def get_db():
     if "db" not in g:
-        g.db = sqlite3.connect(DB_PATH)
+        # timeout=30 + busy_timeout: a writer waits instead of failing
+        # instantly with "database is locked" when another request is
+        # writing. WAL lets readers proceed while a writer writes.
+        g.db = sqlite3.connect(DB_PATH, timeout=30)
         g.db.row_factory = sqlite3.Row
         g.db.execute("PRAGMA foreign_keys = ON")
+        g.db.execute("PRAGMA journal_mode = WAL")
+        g.db.execute("PRAGMA busy_timeout = 30000")
     return g.db
 
 
@@ -245,17 +250,28 @@ def _upsert_quote(db, symbol, q):
 
 
 def _refresh_symbols(db, symbols):
-    """Fetch and store quotes for symbols; returns (refreshed, failed)."""
-    refreshed = failed = 0
+    """Fetch and store quotes for symbols; returns (refreshed, failed).
+
+    Root cause of the 2026-10-26 "database is locked" 500 on
+    /api/refresh: the old code upserted each symbol as it fetched it,
+    so a write transaction stayed open for the whole (slow, network)
+    fetch loop. Any concurrent request that tried to write — a second
+    Refresh click, or the dashboard's own first-load auto-refresh —
+    then hit a locked database. Now all fetches happen first, with no
+    DB writes open, and the upserts + commit are one short transaction
+    at the end."""
+    fetched = []
+    failed = 0
     for sym in symbols:
         q = fetch_quote(sym)
         if q:
-            _upsert_quote(db, sym, q)
-            refreshed += 1
+            fetched.append((sym, q))
         else:
             failed += 1
+    for sym, q in fetched:
+        _upsert_quote(db, sym, q)
     db.commit()
-    return refreshed, failed
+    return len(fetched), failed
 
 
 def _quotes_need_refresh(db, symbols):
@@ -888,7 +904,14 @@ def import_file():
 def refresh_quotes():
     db = get_db()
     symbols = [r["symbol"] for r in db.execute("SELECT DISTINCT symbol FROM holdings")]
-    refreshed, failed = _refresh_symbols(db, symbols)
+    try:
+        refreshed, failed = _refresh_symbols(db, symbols)
+    except sqlite3.OperationalError:
+        # Still locked after the 30s busy timeout: do not leave a half
+        # transaction open, and do not surface a 500 traceback for a
+        # transient lock. The next refresh retries cleanly.
+        db.rollback()
+        return jsonify({"error": "database busy, please try Refresh again"}), 503
     return jsonify({"refreshed": refreshed, "failed": failed,
                     "provider": "finnhub" if FINNHUB_KEY else "yahoo-delayed"})
 

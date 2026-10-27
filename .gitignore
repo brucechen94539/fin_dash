@@ -1,4 +1,4 @@
-fin_dash.db
+fin_dash.db*
 .env
 __pycache__/
 *.pyc
