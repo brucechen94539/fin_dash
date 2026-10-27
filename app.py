@@ -90,10 +90,16 @@ def init_db():
         CREATE TABLE IF NOT EXISTS quotes (
             symbol TEXT PRIMARY KEY,
             price REAL, change REAL, change_pct REAL, volume REAL,
-            provider TEXT, as_of TEXT
+            provider TEXT, as_of TEXT, week_low REAL, week_high REAL
         );
         """
     )
+    # Migration for databases created before the 52-week columns existed.
+    for _col in ("week_low REAL", "week_high REAL"):
+        try:
+            db.execute(f"ALTER TABLE quotes ADD COLUMN {_col}")
+        except sqlite3.OperationalError:
+            pass  # column already exists
     db.execute("INSERT OR IGNORE INTO owners (name) VALUES ('Bruce')")
     db.execute("INSERT OR IGNORE INTO owners (name) VALUES ('Spouse')")
     db.commit()
@@ -131,7 +137,14 @@ def _yahoo_chart(symbol, range_="1y"):
 
 
 def fetch_quote(symbol):
-    """Return (price, change, change_pct, volume, provider) or None."""
+    """Return a dict, or None.
+
+    52-week range: YES, there is a public-API way. Yahoo's chart meta
+    carries fiftyTwoWeekLow / fiftyTwoWeekHigh directly, so no separate
+    endpoint is needed. Finnhub's quote endpoint does not include it, so
+    with a Finnhub key the range is left null here and the detail view
+    falls back to the min/max of the 1-year history (see symbol_detail).
+    """
     symbol = symbol.upper()
     if FINNHUB_KEY:
         try:
@@ -139,7 +152,9 @@ def fetch_quote(symbol):
                 f"https://finnhub.io/api/v1/quote?symbol={symbol}&token={FINNHUB_KEY}"
             )
             if q.get("c"):
-                return q["c"], q.get("d"), q.get("dp"), None, "finnhub"
+                return {"price": q["c"], "change": q.get("d"),
+                        "change_pct": q.get("dp"), "volume": None,
+                        "provider": "finnhub", "week_low": None, "week_high": None}
         except Exception:
             pass  # fall through to Yahoo
     try:
@@ -147,8 +162,12 @@ def fetch_quote(symbol):
         price = meta.get("regularMarketPrice")
         prev = meta.get("chartPreviousClose")
         if price and prev:
-            return price, price - prev, (price - prev) / prev * 100, \
-                meta.get("regularMarketVolume"), "yahoo-delayed"
+            return {"price": price, "change": price - prev,
+                    "change_pct": (price - prev) / prev * 100,
+                    "volume": meta.get("regularMarketVolume"),
+                    "provider": "yahoo-delayed",
+                    "week_low": meta.get("fiftyTwoWeekLow"),
+                    "week_high": meta.get("fiftyTwoWeekHigh")}
     except Exception:
         pass
     try:
@@ -158,9 +177,11 @@ def fetch_quote(symbol):
             rows = [ln.split(",") for ln in lines[1:]]
             last, prev = rows[-1], rows[-2]
             close, prev_close = float(last[4]), float(prev[4])
-            return close, close - prev_close, (
-                (close - prev_close) / prev_close * 100 if prev_close else None
-            ), float(last[5]) if len(last) > 5 and last[5] else None, "stooq-eod"
+            return {"price": close, "change": close - prev_close,
+                    "change_pct": ((close - prev_close) / prev_close * 100
+                                   if prev_close else None),
+                    "volume": float(last[5]) if len(last) > 5 and last[5] else None,
+                    "provider": "stooq-eod", "week_low": None, "week_high": None}
     except Exception:
         pass
     return None
@@ -254,13 +275,30 @@ def dashboard():
         price = quote["price"] if quote and quote["price"] else h["manual_price"]
         if price is None:
             price = h["cost_basis"] / h["shares"] if h["shares"] else 0
+        # Fidelity-style fields (see templates/index.html for the column order).
         h["price"] = price
+        h["last_change"] = quote["change"] if quote else None
+        h["last_change_pct"] = quote["change_pct"] if quote else None
         h["value"] = price * h["shares"]
+        h["current_value"] = h["value"]
         h["gain"] = h["value"] - h["cost_basis"] * h["shares"]
+        h["total_gain"] = h["gain"]
         h["gain_pct"] = (h["gain"] / (h["cost_basis"] * h["shares"]) * 100
                          if h["cost_basis"] and h["shares"] else 0)
+        h["total_gain_pct"] = h["gain_pct"]
         h["day_move"] = (quote["change"] * h["shares"]
                          if quote and quote["change"] is not None else 0)
+        h["today_gain"] = h["day_move"]
+        h["today_gain_pct"] = quote["change_pct"] if quote else 0
+        h["quantity"] = h["shares"]
+        h["cost_total"] = h["cost_basis"] * h["shares"]
+        h["cost_per_share"] = h["cost_basis"]
+        h["week_low"] = quote["week_low"] if quote else None
+        h["week_high"] = quote["week_high"] if quote else None
+        h["week_position"] = (
+            (price - h["week_low"]) / (h["week_high"] - h["week_low"])
+            if h["week_low"] is not None and h["week_high"] is not None
+            and h["week_high"] > h["week_low"] else None)
         h["quote_provider"] = quote["provider"] if quote else "manual"
         h["quote_as_of"] = quote["as_of"] if quote else None
         total_value += h["value"]
@@ -268,6 +306,8 @@ def dashboard():
         day_move += h["day_move"]
         accounts.setdefault(h["account_name"], {"owner": h["owner_name"], "value": 0.0})
         accounts[h["account_name"]]["value"] += h["value"]
+    for h in holdings:  # needs the total above, so a second pass
+        h["pct_of_account"] = (h["value"] / total_value * 100 if total_value else 0)
     return jsonify({
         "owners": owners,
         "holdings": holdings,
@@ -289,9 +329,18 @@ def symbol_detail(symbol):
     db = get_db()
     quote = row(db.execute("SELECT * FROM quotes WHERE symbol=?",
                            (symbol.upper(),)).fetchone())
+    history = fetch_history(symbol)
+    # Fallback 52-week range from the 1-year history when the quote
+    # provider did not supply one (e.g. Finnhub).
+    week_low = week_high = None
+    if quote:
+        week_low, week_high = quote.get("week_low"), quote.get("week_high")
+    if (week_low is None or week_high is None) and history:
+        week_low = min(h["low"] for h in history if h["low"])
+        week_high = max(h["high"] for h in history if h["high"])
     return jsonify({
-        "symbol": symbol.upper(), "quote": quote,
-        "history": fetch_history(symbol),
+        "symbol": symbol.upper(), "quote": quote, "history": history,
+        "week_low": week_low, "week_high": week_high,
     })
 
 
@@ -449,15 +498,17 @@ def refresh_quotes():
     for sym in symbols:
         q = fetch_quote(sym)
         if q:
-            price, ch, pct, vol, provider = q
             db.execute(
                 """INSERT INTO quotes (symbol, price, change, change_pct, volume,
-                                        provider, as_of) VALUES (?, ?, ?, ?, ?, ?, ?)
+                                        provider, as_of, week_low, week_high)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(symbol) DO UPDATE SET price=excluded.price,
                      change=excluded.change, change_pct=excluded.change_pct,
                      volume=excluded.volume, provider=excluded.provider,
-                     as_of=excluded.as_of""",
-                (sym, price, ch, pct, vol, provider, now))
+                     as_of=excluded.as_of, week_low=excluded.week_low,
+                     week_high=excluded.week_high""",
+                (sym, q["price"], q["change"], q["change_pct"], q["volume"],
+                 q["provider"], now, q["week_low"], q["week_high"]))
             refreshed += 1
         else:
             failed += 1

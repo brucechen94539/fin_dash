@@ -12,3 +12,17 @@ form { display: flex; gap: 10px; flex-wrap: wrap; margin: 12px 0; align-items: e
 label { display: flex; flex-direction: column; font-size: 13px; gap: 4px; }
 input, select { padding: 8px; border: 1px solid #cbd3df; border-radius: 8px; }
 .small { color: #556; font-size: 13px; } canvas { width: 100%; height: auto; }
+/* Fidelity-style positions table */
+#holdings { font-size: 14px; }
+#holdings th { cursor: pointer; white-space: nowrap; }
+#holdings td.num, #holdings th:nth-child(n+2) { text-align: right; }
+#holdings td:first-child, #holdings th:first-child { text-align: left; }
+.sub-line { display: block; color: #556; font-size: 12px; }
+.pos { color: #0a7d33; } .neg { color: #c00; }
+.group-header td { background: #f1f5f9; font-weight: 600; padding: 10px 8px; }
+.total-row td { border-top: 2px solid #1c2333; font-weight: 600; background: #fafbfc; }
+.holding-row { cursor: pointer; } .holding-row:hover { background: #eef6ff; }
+.range { min-width: 140px; }
+.range-bar { display: block; position: relative; height: 2px; background: #cbd3df; margin: 10px 4px 4px; }
+.range-bar i { position: absolute; top: -4px; width: 9px; height: 9px; background: #1c2333; transform: rotate(45deg); }
+.range-labels { display: flex; justify-content: space-between; color: #556; font-size: 12px; }

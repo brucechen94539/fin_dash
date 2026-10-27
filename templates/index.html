@@ -22,10 +22,22 @@
     <button id="refresh">Refresh quotes</button>
   </div>
   <div class="table-wrap"><table id="holdings">
-    <thead><tr><th>Owner</th><th>Account</th><th>Symbol</th><th>Shares</th><th>Price</th><th>Value</th><th>Day move</th><th>Gain</th><th>Source / quote</th><th></th></tr></thead>
+    <thead><tr>
+      <th data-sort="symbol" data-label="Symbol">Symbol</th>
+      <th data-sort="price" data-label="Last price">Last price</th>
+      <th data-sort="today_gain" data-label="Today's gain/loss">Today's gain/loss</th>
+      <th data-sort="total_gain" data-label="Total gain/loss">Total gain/loss</th>
+      <th data-sort="current_value" data-label="Current value">Current value</th>
+      <th data-sort="pct_of_account" data-label="% of account">% of account</th>
+      <th data-sort="quantity" data-label="Quantity">Quantity</th>
+      <th data-sort="cost_total" data-label="Cost basis">Cost basis</th>
+      <th data-label="52-week range">52-week range</th>
+      <th></th>
+    </tr></thead>
     <tbody></tbody>
+    <tfoot></tfoot>
   </table></div>
-  <p id="detail-hint">Click a holding row for its price + volume chart.</p>
+  <p id="detail-hint">Click a holding row for its price + volume chart. 52-week range comes from the market-data API on refresh (Yahoo fiftyTwoWeekLow/High); without a quote it shows as a dash, not an estimate.</p>
 </section>
 
 <section class="panel" id="detail" hidden>

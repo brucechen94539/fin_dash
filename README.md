@@ -9,6 +9,21 @@ not buy or sell anything. There are no trading endpoints in this codebase.
 - **Bruce** / **Spouse** — per-owner views (names are editable in the app;
   more owners can be added in code via the `owners` table)
 
+## Positions table (Fidelity-style)
+
+Columns, in order: Symbol | Last price | Today's gain/loss | Total
+gain/loss | Current value | % of account | Quantity | Cost basis |
+52-week range. Click a column header to sort. Holdings are grouped by
+account, each group has its own Account total row, and the table footer
+is the overall total.
+
+**52-week range: yes, via API.** Yahoo's chart meta returns
+`fiftyTwoWeekLow` / `fiftyTwoWeekHigh` directly, and fin_dash stores them
+on refresh, rendering the range bar with the current price as a diamond
+marker. With a Finnhub key (whose quote endpoint has no 52-week field),
+the detail view falls back to the min/max of the 1-year history. Without
+any quote, the cell shows a dash — never an invented range.
+
 ## Data in (hybrid)
 
 1. **CSV / XLSX import** — upload a brokerage export. Flexible headers:
