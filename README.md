@@ -3,6 +3,11 @@
 View-only household portfolio dashboard. It shows your finances — it does
 not buy or sell anything. There are no trading endpoints in this codebase.
 
+Its look (white cards, pill owner/range tabs, soft shadows, card-style
+phone layout) is styled to match the hosted Household Portfolio
+Dashboard; only the presentation differs from earlier versions, not
+the data, columns, or import/quote logic.
+
 ## Views
 
 - **Household** — all owners combined
