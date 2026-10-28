@@ -32,6 +32,35 @@ const $ = (s) => document.querySelector(s);
 // mask only — the server still returns real values to the browser.
 let masked = false;
 try { masked = localStorage.getItem("fin_dash_masked") === "1"; } catch {}
+// Theme-aware canvas colours: canvas text/lines do not follow CSS
+// variables, so charts read the theme explicitly. Light uses darker
+// blues/greys/oranges/purples for contrast on white; dark uses the
+// lighter versions for contrast on navy. WCAG contrast, computed
+// from the hex pairs (all >= 4.5:1, the AA bar for normal text):
+// light on white — text 16.4:1, muted 5.44:1, pos 5.26:1,
+// neg 5.89:1, white on accent #1f6feb 4.63:1; dark on #1e293b —
+// text 13.98:1, muted 5.71:1, pos 6.42:1, neg 5.29:1, and
+// #0b1220 on accent #60a5fa 7.36:1.
+function themeColors() {
+  const dark = document.documentElement.dataset.theme === "dark";
+  return dark ? {
+    text: "#e2e8f0", muted: "#94a3b8", grid: "#334155", card: "#1e293b",
+    priceLine: "#f8fafc", portfolio: "#60a5fa", portfolioRgb: "96, 165, 250",
+    voo: "#94a3b8", ma50: "#fb923c", ma200: "#c084fc",
+    up: "#22c55e", down: "#f87171", crosshair: "#f8fafc",
+  } : {
+    text: "#16202e", muted: "#5b6b80", grid: "#e2e8f0", card: "#ffffff",
+    priceLine: "#16202e", portfolio: "#1f6feb", portfolioRgb: "31, 111, 235",
+    voo: "#5b6b80", ma50: "#ea580c", ma200: "#7c3aed",
+    up: "#0a7d33", down: "#c00", crosshair: "#16202e",
+  };
+}
+function updateThemeButton() {
+  const b = $("#theme-toggle"); if (!b) return;
+  const dark = document.documentElement.dataset.theme === "dark";
+  b.textContent = dark ? "☀️ Light theme" : "🌙 Dark theme";
+  b.setAttribute("aria-pressed", dark ? "true" : "false");
+}
 // Null is a missing value, not zero: the old money() rendered null
 // as $0.00 (via n || 0), which is how an unpriced holding's
 // gain/loss showed as 0.0. Now null renders as "—" (or **** when
@@ -257,7 +286,7 @@ function drawAllocation() {
   // without editing this code.
   const outerR = Math.min(c.width, c.height) / 2 - 10;
   ctx.beginPath(); ctx.arc(c.width / 2, c.height / 2, outerR * 0.6, 0, Math.PI * 2);
-  ctx.fillStyle = "#1e293b"; ctx.fill();
+  ctx.fillStyle = themeColors().card; ctx.fill();
   $("#alloc-legend").innerHTML = entries.map(([sym, v], i) =>
     `<div><span style="display:inline-block;width:12px;height:12px;background:${colors[i % colors.length]}"></span> ` +
     `${sym} — ${(v / total * 100).toFixed(1)}% (${money(v)})</div>`).join("");
@@ -322,6 +351,7 @@ function drawGrowth(hoverIdx = null) {
   const c = $("#growth-chart"), ctx = c.getContext("2d");
   ctx.clearRect(0, 0, c.width, c.height);
   ctx.font = "12px -apple-system, Helvetica, Arial, sans-serif";
+  const tc = themeColors();
   if (!lastGrowth || !lastGrowth.dates.length) {
     $("#growth-meta").textContent = "No growth history yet — add holdings first.";
     return;
@@ -347,24 +377,24 @@ function drawGrowth(hoverIdx = null) {
   const x = (i) => left + (p.length > 1 ? (i / (p.length - 1)) * W : W / 2);
   const y = (val) => top + (1 - (val - lo) / (hi - lo || 1)) * H;
   // Legend (top row, above the plot area).
-  ctx.fillStyle = "#60a5fa"; ctx.fillRect(left, 8, 18, 3);
-  ctx.fillStyle = "#e2e8f0"; ctx.textAlign = "left"; ctx.fillText("Portfolio", left + 24, 14);
-  ctx.fillStyle = "#94a3b8"; ctx.fillRect(left + 110, 8, 18, 3);
+  ctx.fillStyle = tc.portfolio; ctx.fillRect(left, 8, 18, 3);
+  ctx.fillStyle = tc.text; ctx.textAlign = "left"; ctx.fillText("Portfolio", left + 24, 14);
+  ctx.fillStyle = tc.voo; ctx.fillRect(left + 110, 8, 18, 3);
   ctx.fillText("VOO", left + 134, 14);
   ctx.fillText(`${dates[0]} → ${dates[dates.length - 1]}`, left + 190, 14);
   // Gridlines + index axis.
   ctx.textAlign = "right";
   for (let g = 0; g <= 4; g++) {
     const val = lo + (hi - lo) * g / 4, gy = y(val);
-    ctx.strokeStyle = "#334155"; ctx.lineWidth = 1;
+    ctx.strokeStyle = tc.grid; ctx.lineWidth = 1;
     ctx.beginPath(); ctx.moveTo(left, gy); ctx.lineTo(left + W, gy); ctx.stroke();
-    ctx.fillStyle = "#94a3b8"; ctx.fillText(val.toFixed(1), left - 8, gy + 4);
+    ctx.fillStyle = tc.muted; ctx.fillText(val.toFixed(1), left - 8, gy + 4);
   }
   // Dashed 100 baseline (the range start), when in view.
   if (lo <= 100 && 100 <= hi) {
-    ctx.save(); ctx.setLineDash([6, 4]); ctx.strokeStyle = "#64748b";
+    ctx.save(); ctx.setLineDash([6, 4]); ctx.strokeStyle = tc.muted;
     ctx.beginPath(); ctx.moveTo(left, y(100)); ctx.lineTo(left + W, y(100)); ctx.stroke(); ctx.restore();
-    ctx.fillStyle = "#64748b"; ctx.fillText("100", left - 8, y(100) - 6);
+    ctx.fillStyle = tc.muted; ctx.fillText("100", left - 8, y(100) - 6);
   }
   // Shaded gap between the lines, segment by segment.
   for (let i = 1; i < p.length; i++) {
@@ -376,7 +406,7 @@ function drawGrowth(hoverIdx = null) {
   }
   // Soft fill under the portfolio line.
   const grad = ctx.createLinearGradient(0, top, 0, top + H);
-  grad.addColorStop(0, "rgba(96, 165, 250, 0.22)"); grad.addColorStop(1, "rgba(96, 165, 250, 0)");
+  grad.addColorStop(0, "rgba(" + tc.portfolioRgb + ", 0.22)"); grad.addColorStop(1, "rgba(" + tc.portfolioRgb + ", 0)");
   ctx.fillStyle = grad; ctx.beginPath(); ctx.moveTo(x(0), y(p[0]));
   p.forEach((val, i) => ctx.lineTo(x(i), y(val)));
   ctx.lineTo(x(p.length - 1), top + H); ctx.lineTo(x(0), top + H); ctx.closePath(); ctx.fill();
@@ -386,25 +416,25 @@ function drawGrowth(hoverIdx = null) {
     series.forEach((val, i) => { const px = x(i), py = y(val); i ? ctx.lineTo(px, py) : ctx.moveTo(px, py); });
     ctx.stroke(); ctx.restore();
   };
-  line(v, "#94a3b8", 2, true);
-  line(p, "#60a5fa", 2.5, false);
+  line(v, tc.voo, 2, true);
+  line(p, tc.portfolio, 2.5, false);
   // Start dot (both at 100) and end dots + end-index labels.
   const dot = (px, py, color) => { ctx.beginPath(); ctx.fillStyle = color; ctx.arc(px, py, 4, 0, Math.PI * 2); ctx.fill(); };
-  dot(x(0), y(100), "#e2e8f0");
+  dot(x(0), y(100), tc.text);
   const lastI = p.length - 1;
-  dot(x(lastI), y(p[lastI]), "#60a5fa"); dot(x(lastI), y(v[lastI]), "#94a3b8");
+  dot(x(lastI), y(p[lastI]), tc.portfolio); dot(x(lastI), y(v[lastI]), tc.voo);
   ctx.textAlign = "left";
-  ctx.fillStyle = "#60a5fa"; ctx.fillText(p[lastI].toFixed(1), x(lastI) + 8, y(p[lastI]) + 4);
-  ctx.fillStyle = "#94a3b8"; ctx.fillText(v[lastI].toFixed(1), x(lastI) + 8, y(v[lastI]) + 4);
+  ctx.fillStyle = tc.portfolio; ctx.fillText(p[lastI].toFixed(1), x(lastI) + 8, y(p[lastI]) + 4);
+  ctx.fillStyle = tc.voo; ctx.fillText(v[lastI].toFixed(1), x(lastI) + 8, y(v[lastI]) + 4);
   // Date axis: first, middle, last.
-  ctx.fillStyle = "#94a3b8"; ctx.textAlign = "center";
+  ctx.fillStyle = tc.muted; ctx.textAlign = "center";
   [0, Math.floor(lastI / 2), lastI].filter((i, _, a) => a.indexOf(i) === i)
     .forEach((i) => ctx.fillText(dates[i], x(i), top + H + 20));
   // Hover crosshair.
   if (hoverIdx != null && hoverIdx >= 0 && hoverIdx < p.length) {
-    ctx.save(); ctx.setLineDash([4, 4]); ctx.strokeStyle = "#f8fafc"; ctx.lineWidth = 1;
+    ctx.save(); ctx.setLineDash([4, 4]); ctx.strokeStyle = tc.crosshair; ctx.lineWidth = 1;
     ctx.beginPath(); ctx.moveTo(x(hoverIdx), top); ctx.lineTo(x(hoverIdx), top + H); ctx.stroke(); ctx.restore();
-    dot(x(hoverIdx), y(p[hoverIdx]), "#60a5fa"); dot(x(hoverIdx), y(v[hoverIdx]), "#94a3b8");
+    dot(x(hoverIdx), y(p[hoverIdx]), tc.portfolio); dot(x(hoverIdx), y(v[hoverIdx]), tc.voo);
   }
   c._growth = {dates, p, v, x};
   // Meta: range return, outperformance, days ahead, max drawdowns.
@@ -516,7 +546,8 @@ function drawChart(history, canvas, costBasis) {
   const c = canvas, ctx = c.getContext("2d");
   ctx.clearRect(0, 0, c.width, c.height);
   ctx.font = "12px -apple-system, Helvetica, Arial, sans-serif";
-  if (!history.length) { ctx.fillStyle = "#e2e8f0"; ctx.fillText("No price history available for this symbol.", 20, 30); return; }
+  const tc = themeColors();
+  if (!history.length) { ctx.fillStyle = tc.text; ctx.fillText("No price history available for this symbol.", 20, 30); return; }
   const days = DETAIL_RANGES[detailRange] || 365;
   const lastDate = new Date(history[history.length - 1].date);
   const cutoff = new Date(lastDate); cutoff.setDate(cutoff.getDate() - days);
@@ -534,7 +565,7 @@ function drawChart(history, canvas, costBasis) {
   const y = (v) => top + (1 - (v - lo) / (hi - lo || 1)) * priceH;
   const vmax = Math.max(...data.map((h) => h.volume), 1);
   // Gridlines + price axis (masked like every other dollar amount).
-  ctx.strokeStyle = "#334155"; ctx.lineWidth = 1; ctx.fillStyle = "#94a3b8"; ctx.textAlign = "right";
+  ctx.strokeStyle = tc.grid; ctx.lineWidth = 1; ctx.fillStyle = tc.muted; ctx.textAlign = "right";
   for (let g = 0; g <= 4; g++) {
     const v = lo + (hi - lo) * g / 4, gy = y(v);
     ctx.beginPath(); ctx.moveTo(left, gy); ctx.lineTo(left + W, gy); ctx.stroke();
@@ -543,7 +574,7 @@ function drawChart(history, canvas, costBasis) {
   // Volume bars, green on up days, red on down days.
   data.forEach((h, i) => {
     const vh = (h.volume / vmax) * volH;
-    ctx.fillStyle = h.close >= (h.open || h.close) ? "#22c55e" : "#f87171";
+    ctx.fillStyle = h.close >= (h.open || h.close) ? tc.up : tc.down;
     ctx.fillRect(x(i), top + priceH + gap + volH - vh, Math.max(1, W / data.length - 1), vh);
   });
   const line = (values, color, width) => {
@@ -556,32 +587,32 @@ function drawChart(history, canvas, costBasis) {
     });
     ctx.stroke();
   };
-  line(ma200Full, "#c084fc", 1.5);
-  line(ma50Full, "#fb923c", 1.5);
-  ctx.beginPath(); ctx.strokeStyle = "#f8fafc"; ctx.lineWidth = 2;
+  line(ma200Full, tc.ma200, 1.5);
+  line(ma50Full, tc.ma50, 1.5);
+  ctx.beginPath(); ctx.strokeStyle = tc.priceLine; ctx.lineWidth = 2;
   data.forEach((h, i) => { const px = x(i), py = y(h.close); i ? ctx.lineTo(px, py) : ctx.moveTo(px, py); });
   ctx.stroke();
   // Cost basis: dashed green line + label, only when in view.
   if (costBasis != null && costBasis > 0 && costBasis >= lo && costBasis <= hi) {
-    ctx.save(); ctx.setLineDash([6, 4]); ctx.strokeStyle = "#22c55e"; ctx.lineWidth = 1.5;
+    ctx.save(); ctx.setLineDash([6, 4]); ctx.strokeStyle = tc.up; ctx.lineWidth = 1.5;
     ctx.beginPath(); ctx.moveTo(left, y(costBasis)); ctx.lineTo(left + W, y(costBasis)); ctx.stroke(); ctx.restore();
-    ctx.fillStyle = "#22c55e"; ctx.textAlign = "left";
+    ctx.fillStyle = tc.up; ctx.textAlign = "left";
     ctx.fillText(masked ? "Cost ****" : `Cost $${costBasis.toFixed(2)}`, left + 6, y(costBasis) - 6);
   }
   // Last-price dot + label.
   const last = data[data.length - 1];
-  ctx.beginPath(); ctx.fillStyle = "#f8fafc"; ctx.arc(x(data.length - 1), y(last.close), 4, 0, Math.PI * 2); ctx.fill();
-  ctx.fillStyle = "#e2e8f0"; ctx.textAlign = "left";
+  ctx.beginPath(); ctx.fillStyle = tc.priceLine; ctx.arc(x(data.length - 1), y(last.close), 4, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = tc.text; ctx.textAlign = "left";
   ctx.fillText(masked ? "****" : `$${last.close.toFixed(2)}`, Math.min(x(data.length - 1) + 8, left + W - 60), y(last.close) - 8);
   // Date axis: first, middle, last.
-  ctx.fillStyle = "#94a3b8"; ctx.textAlign = "center";
+  ctx.fillStyle = tc.muted; ctx.textAlign = "center";
   const labelIdx = [0, Math.floor(data.length / 2), data.length - 1].filter((v, i, a) => a.indexOf(v) === i);
   labelIdx.forEach((i) => ctx.fillText(data[i].date, x(i), top + priceH + gap + volH + 20));
   ctx.textAlign = "left";
   // Store geometry for the hover handler in fillDetail.
   c._detail = {data, ma50Full, ma200Full, x, y, left, W, top, priceH};
   const rangeLabel = `${data[0].date} → ${last.date} • ${masked ? "**** – ****" : `$${min.toFixed(2)} – $${max.toFixed(2)}`}`;
-  ctx.fillStyle = "#e2e8f0"; ctx.fillText(rangeLabel, left, 14);
+  ctx.fillStyle = tc.text; ctx.fillText(rangeLabel, left, 14);
 }
 
 async function fillDetail(holdingId, symbol) {
@@ -681,6 +712,21 @@ $("#mask-toggle").addEventListener("click", () => {
   load();
 });
 updateMaskButton();
+
+// Theme toggle: light is the default, dark is the hosted look.
+// Persist, update the button + theme-color meta, then re-render so
+// canvas charts redraw with the new theme colours.
+$("#theme-toggle").addEventListener("click", () => {
+  const dark = document.documentElement.dataset.theme !== "dark";
+  if (dark) document.documentElement.dataset.theme = "dark";
+  else delete document.documentElement.dataset.theme;
+  try { localStorage.setItem("fin_dash_theme", dark ? "dark" : "light"); } catch {}
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.setAttribute("content", dark ? "#0b1220" : "#f4f6f9");
+  updateThemeButton();
+  load();
+});
+updateThemeButton();
 
 $("#add-form").addEventListener("submit", async (e) => {
   e.preventDefault();

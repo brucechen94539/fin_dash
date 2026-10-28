@@ -7,7 +7,17 @@
      icon let Safari's Share → Add to Home Screen open fin_dash
      full-screen, without Safari chrome. No service worker is
      registered on purpose — a cached shell could serve stale prices. -->
-<meta name="theme-color" content="#0b1220">
+<meta name="theme-color" content="#f4f6f9">
+<script>
+  // Theme before first paint: light is the default; only a stored
+  // "dark" choice switches to dark, so first-time visitors see light.
+  try {
+    if (localStorage.getItem("fin_dash_theme") === "dark") {
+      document.documentElement.dataset.theme = "dark";
+      document.querySelector('meta[name="theme-color"]').setAttribute("content", "#0b1220");
+    }
+  } catch {}
+</script>
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
@@ -15,13 +25,14 @@
 <link rel="apple-touch-icon" href="/static/icon.svg">
 <link rel="manifest" href="/static/manifest.json">
 <title>fin_dash — Household Portfolio Dashboard</title>
-<link rel="stylesheet" href="/static/style.css?v=3">
+<link rel="stylesheet" href="/static/style.css?v=4">
 </head>
 <body>
 <header>
   <h1>Household Portfolio Dashboard</h1>
   <p class="sub">View-only household dashboard. No buy / sell actions. Prices may be delayed.</p>
   <button id="mask-toggle" aria-pressed="false" title="Mask monetary values with asterisks">🙈 Mask values</button>
+  <button id="theme-toggle" aria-pressed="false" title="Switch between light and dark themes">🌙 Dark theme</button>
   <p class="small">Masking hides every dollar amount as **** (percentages, quantities and symbols stay visible). It is a display mask only — tap the eye again to show values.</p>
 </header>
 
