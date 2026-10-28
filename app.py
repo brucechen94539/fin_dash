@@ -158,11 +158,33 @@ def _yahoo_quote(symbol):
     regularMarketPrice (intraday while the market is open, the close
     otherwise), regularMarketDayLow/High for today, and
     fiftyTwoWeekLow/High. If the day fields are absent, fall back to
-    the last daily bar in the 5-day chart."""
+    the last daily bar in the 5-day chart.
+
+    Previous close is NOT meta chartPreviousClose: for a 5d chart
+    that field is the close before the 5-day window (2026-10-20:
+    $339.50 for AAPL), not the previous trading day. That gave
+    AAPL a bogus +$7.60 (+2.24%) instead of the hosted +$3.19
+    (+0.93%). Previous close is taken from the daily bars instead:
+    the second-last close once the market has closed (price ==
+    last close: 2026-10-27 $347.10, previous 2026-10-26 $343.91),
+    or the last close while the market is still open (intraday
+    price differs from the last bar)."""
     result = _yahoo_chart(symbol, "5d")["chart"]["result"][0]
     meta = result["meta"]
     price = meta.get("regularMarketPrice")
-    prev = meta.get("chartPreviousClose")
+    prev = None
+    try:
+        closes = [v for v in result["indicators"]["quote"][0]["close"]
+                  if v is not None]
+        if closes:
+            if abs(price - closes[-1]) < 0.01 and len(closes) >= 2:
+                prev = closes[-2]
+            else:
+                prev = closes[-1]
+    except Exception:
+        pass
+    if prev is None:
+        prev = meta.get("regularMarketPreviousClose") or meta.get("chartPreviousClose")
     if not (price and prev):
         return None
     day_low = meta.get("regularMarketDayLow")
