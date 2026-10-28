@@ -149,12 +149,19 @@ input, select {
 /* Watch list as soft cards, not bare bullets. */
 #watch-list { list-style: none; padding: 0; margin: 12px 0 0; }
 #watch-list li { margin: 8px 0; padding: 10px 12px; background: #16233a; border-radius: 10px; }
-/* Allocation: the donut takes its full 320px again (it was 220px
-   for one round — too small), but the legend sits beside it, not
-   below it, so the panel is roughly one row tall and the horizontal
-   space is actually used instead of left empty to the donut's right. */
-.alloc-row { display: flex; gap: 20px; align-items: center; flex-wrap: wrap; }
-#alloc-chart { max-width: 320px; width: 100%; height: auto; flex: 0 1 320px; }
+/* Allocation: the donut takes at least 50% of the panel column
+   (flex-basis 50%, 600px canvas for sharpness at that size), with
+   the legend beside it, not below it, so the panel is roughly one
+   row tall and the horizontal space is actually used instead of
+   left empty to the donut's right. On narrow screens the row wraps
+   and the donut goes full-width, which is still at least 50%. */
+.alloc-row { display: flex; gap: 20px; align-items: center; flex-wrap: wrap; position: relative; }
+#alloc-chart { flex: 1 1 50%; min-width: 50%; width: 50%; height: auto; max-width: 640px; }
+.alloc-tooltip {
+  position: absolute; display: none; pointer-events: none; z-index: 10;
+  background: #0f172a; border: 1px solid var(--border); border-radius: 10px;
+  padding: 8px 10px; font-size: 13px; box-shadow: var(--shadow); white-space: nowrap;
+}
 #alloc-legend { flex: 1 1 200px; min-width: 180px; }
 #alloc-legend div { margin: 6px 0; font-size: 13px; }
 /* Phone card layout: below 640px the wide holdings table stops

@@ -240,13 +240,18 @@ function drawAllocation() {
   if (!total) { $("#alloc-legend").textContent = "No holdings yet."; return; }
   const colors = ["#1f6feb", "#0a7d33", "#e67e22", "#7d3cff", "#c00", "#0e9aa7", "#8a6d00", "#556", "#2f9e44", "#d63384"];
   let start = -Math.PI / 2;
+  const slices = [];
   entries.forEach(([sym, v], i) => {
     const frac = v / total, end = start + frac * Math.PI * 2;
+    slices.push({sym, v, start, end, color: colors[i % colors.length]});
     ctx.beginPath(); ctx.moveTo(c.width / 2, c.height / 2);
     ctx.arc(c.width / 2, c.height / 2, Math.min(c.width, c.height) / 2 - 10, start, end);
     ctx.closePath(); ctx.fillStyle = colors[i % colors.length]; ctx.fill();
     start = end;
   });
+  // Hover tooltip data: centre, radii, and each slice's angles.
+  const outerR0 = Math.min(c.width, c.height) / 2 - 10;
+  c._alloc = {slices, total, cx: c.width / 2, cy: c.height / 2, outerR: outerR0, innerR: outerR0 * 0.6};
   // Inner hole scales with the canvas (60% of the outer radius), so
   // changing the canvas size in the template resizes the donut
   // without editing this code.
@@ -257,6 +262,41 @@ function drawAllocation() {
     `<div><span style="display:inline-block;width:12px;height:12px;background:${colors[i % colors.length]}"></span> ` +
     `${sym} — ${(v / total * 100).toFixed(1)}% (${money(v)})</div>`).join("");
 }
+
+// Allocation hover tooltip: hovering (or tapping, on touch) a slice
+// shows its ticker, share, and value in a floating tooltip by the
+// cursor. Angles are measured from the -90° start used when drawing;
+// only hits inside the donut ring count, not the centre hole or
+// outside the donut.
+function allocSliceAt(e) {
+  const c = $("#alloc-chart"), det = c._alloc;
+  if (!det) return null;
+  const rect = c.getBoundingClientRect();
+  const px = (e.clientX - rect.left) * (c.width / rect.width);
+  const py = (e.clientY - rect.top) * (c.height / rect.height);
+  const dx = px - det.cx, dy = py - det.cy, r = Math.hypot(dx, dy);
+  if (r < det.innerR || r > det.outerR) return null;
+  let ang = Math.atan2(dy, dx);
+  if (ang < -Math.PI / 2) ang += Math.PI * 2;
+  return det.slices.find((s) => ang >= s.start && ang < s.end) || null;
+}
+function showAllocTooltip(e) {
+  const tip = $("#alloc-tooltip"), c = $("#alloc-chart"), det = c._alloc;
+  if (!tip || !det) return;
+  const slice = allocSliceAt(e);
+  if (!slice) { tip.style.display = "none"; return; }
+  tip.innerHTML = `<strong>${slice.sym}</strong> — ${(slice.v / det.total * 100).toFixed(1)}% (${money(slice.v)})`;
+  tip.style.display = "block";
+  const row = tip.parentElement, rowRect = row.getBoundingClientRect(), rect = c.getBoundingClientRect();
+  const cssX = e.clientX - rect.left, cssY = e.clientY - rect.top;
+  tip.style.left = `${Math.min(rect.left - rowRect.left + cssX + 14, rowRect.width - 180)}px`;
+  tip.style.top = `${Math.max(rect.top - rowRect.top + cssY - 10, 0)}px`;
+}
+$("#alloc-chart").addEventListener("mousemove", showAllocTooltip);
+$("#alloc-chart").addEventListener("click", showAllocTooltip);
+$("#alloc-chart").addEventListener("mouseleave", () => {
+  const tip = $("#alloc-tooltip"); if (tip) tip.style.display = "none";
+});
 
 async function loadGrowth() {
   try {
