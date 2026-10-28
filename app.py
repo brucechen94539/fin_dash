@@ -143,9 +143,12 @@ def _http_text(url, timeout=15):
 
 
 def _yahoo_chart(symbol, range_="1y"):
-    """Yahoo chart JSON. Unofficial endpoint, personal-use only."""
+    """Yahoo chart JSON. Unofficial endpoint, personal-use only.
+    The symbol is URL-quoted so index symbols (^DJI, ^IXIC, ^GSPC)
+    work as well as tickers — plain tickers are unchanged."""
+    from urllib.parse import quote as _urlquote
     req = urllib.request.Request(
-        f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+        f"https://query1.finance.yahoo.com/v8/finance/chart/{_urlquote(symbol, safe='')}"
         f"?range={range_}&interval=1d",
         headers={"User-Agent": "Mozilla/5.0"})
     with urllib.request.urlopen(req, timeout=15) as resp:
@@ -162,23 +165,35 @@ def _yahoo_quote(symbol):
 
     Previous close is NOT meta chartPreviousClose: for a 5d chart
     that field is the close before the 5-day window (2026-10-20:
-    $339.50 for AAPL), not the previous trading day. That gave
-    AAPL a bogus +$7.60 (+2.24%) instead of the hosted +$3.19
-    (+0.93%). Previous close is taken from the daily bars instead:
-    the second-last close once the market has closed (price ==
-    last close: 2026-10-27 $347.10, previous 2026-10-26 $343.91),
-    or the last close while the market is still open (intraday
-    price differs from the last bar)."""
+    $339.50 for AAPL; $52,495.88 for DJIA), not the previous trading
+    day. That gave AAPL a bogus +$7.60 (+2.24%) instead of the hosted
+    +$3.19 (+0.93%). Previous close is taken from the daily bars
+    instead: the second-last close once the market has closed
+    (price == last close: 2026-10-27 $347.10, previous 2026-10-26
+    $343.91), or the last close while the market is still open
+    (intraday price differs from the last bar).
+    The "price == last close" test uses a relative tolerance, not
+    a fixed $0.01: Yahoo rounds large index prices to 0.1 (DJIA
+    price $52,377.6 vs last close $52,377.57, a $0.03 gap), so a
+    fixed $0.01 test misread DJIA as intraday and gave +$0.03
+    instead of the correct +$15.99 (Oct 26 close $52,361.58)."""
     result = _yahoo_chart(symbol, "5d")["chart"]["result"][0]
     meta = result["meta"]
     price = meta.get("regularMarketPrice")
     prev = None
+    change = None
     try:
         closes = [v for v in result["indicators"]["quote"][0]["close"]
                   if v is not None]
         if closes:
-            if abs(price - closes[-1]) < 0.01 and len(closes) >= 2:
+            tol = max(0.01, abs(price) * 1e-6) if price else 0.01
+            if abs(price - closes[-1]) <= tol and len(closes) >= 2:
                 prev = closes[-2]
+                # Change from the closes themselves, not the rounded
+                # meta price: DJIA meta price $52,377.6 − Oct 26
+                # $52,361.58 = $16.02, while the closes give the
+                # screenshot-exact $52,377.57 − $52,361.58 = $15.99.
+                change = closes[-1] - prev
             else:
                 prev = closes[-1]
     except Exception:
@@ -187,6 +202,8 @@ def _yahoo_quote(symbol):
         prev = meta.get("regularMarketPreviousClose") or meta.get("chartPreviousClose")
     if not (price and prev):
         return None
+    if change is None:
+        change = price - prev
     day_low = meta.get("regularMarketDayLow")
     day_high = meta.get("regularMarketDayHigh")
     if day_low is None or day_high is None:
@@ -198,8 +215,8 @@ def _yahoo_quote(symbol):
             day_high = day_high if day_high is not None else (highs[-1] if highs else None)
         except Exception:
             pass
-    return {"price": price, "change": price - prev,
-            "change_pct": (price - prev) / prev * 100,
+    return {"price": price, "change": change,
+            "change_pct": change / prev * 100,
             "volume": meta.get("regularMarketVolume"),
             "provider": "yahoo-delayed",
             "week_low": meta.get("fiftyTwoWeekLow"),
@@ -671,6 +688,29 @@ def _watch_flags(holdings, total_value):
                       "(VOO, SPY, QQQ, VTI, SCHD, IVV). This is a composition "
                       "observation, not a suggestion to buy one."})
     return flags
+
+
+@app.route("/api/markets")
+def markets():
+    """US market indices for the Markets panel: DJIA, NASDAQ, S&P 500.
+    Same Yahoo quote logic as holdings (previous close from the
+    daily bars, not chartPreviousClose), so the day change matches
+    the holdings' day-change definition. A failed index fetch
+    returns null for that index, never an invented number."""
+    out = []
+    for name, symbol in (("DJIA", "^DJI"), ("NASDAQ", "^IXIC"), ("S&P 500", "^GSPC")):
+        try:
+            q = fetch_quote(symbol)
+        except Exception:
+            q = None
+        out.append({
+            "name": name, "symbol": symbol,
+            "price": q["price"] if q else None,
+            "change": q["change"] if q else None,
+            "change_pct": q["change_pct"] if q else None,
+            "provider": q["provider"] if q else "none",
+        })
+    return jsonify({"markets": out})
 
 
 @app.route("/api/growth")

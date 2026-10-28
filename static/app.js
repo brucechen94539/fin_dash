@@ -484,6 +484,75 @@ $("#growth-chart").addEventListener("mouseleave", () => {
   if (hover) hover.textContent = "Hover a point for that date's portfolio vs VOO index.";
 });
 
+// Overview panels: US Markets (live indices + portfolio row from
+// the dashboard totals), Portfolio Breakdown (holdings grouped by
+// brokerage name, summed across owners when the same brokerage
+// appears for both), and Movers (holdings aggregated by symbol).
+let lastMarkets = null, moversUnit = "$";
+function marketRow(name, value, change, changePct) {
+  const arrow = change == null ? "" : (change >= 0 ? " ↑" : " ↓");
+  const clsName = change == null ? "" : (change >= 0 ? "pos" : "neg");
+  const display = value == null ? "—"
+    : name === "Your Portfolio" ? money(value)
+    : value.toLocaleString(undefined, {maximumFractionDigits: 2});
+  const changeDisplay = change == null ? "—"
+    : name === "Your Portfolio" ? moneySigned(change)
+    : `${change >= 0 ? "+" : ""}${change.toFixed(2)}`;
+  return `<tr><td>${name}</td><td class="num">${display}</td>` +
+    `<td class="num ${clsName}">${change == null ? "—" : `${changeDisplay} (${pct(changePct)})${arrow}`}</td></tr>`;
+}
+function renderMarkets() {
+  const tbody = $("#markets-table tbody"); if (!tbody) return;
+  const t = lastData ? lastData.totals : null;
+  const rows = (lastMarkets || []).map((m) => marketRow(m.name, m.price, m.change, m.change_pct)).join("");
+  const portfolio = t ? marketRow("Your Portfolio", t.value, t.day_move, t.day_move_pct) : "";
+  tbody.innerHTML = rows + portfolio || `<tr><td colspan="3">Loading markets…</td></tr>`;
+}
+async function loadMarkets() {
+  try { lastMarkets = (await (await fetch("/api/markets")).json()).markets; }
+  catch { lastMarkets = []; }
+  renderMarkets();
+}
+function renderBreakdown() {
+  const tbody = $("#breakdown-table tbody"); if (!tbody || !lastData) return;
+  const byBroker = {};
+  (lastData.holdings || []).filter((h) => h.priced).forEach((h) => {
+    const g = byBroker[h.account_name] || (byBroker[h.account_name] = {value: 0, day: 0});
+    g.value += h.current_value; g.day += h.today_gain || 0;
+  });
+  const rows = Object.entries(byBroker).sort((a, b) => b[1].value - a[1].value)
+    .map(([name, g]) => {
+      const pctVal = g.value - g.day ? g.day / (g.value - g.day) * 100 : null;
+      return `<tr><td>${name}</td><td class="num">${money(g.value)}</td>` +
+        `<td class="num ${g.day >= 0 ? "pos" : "neg"}">${moneySigned(g.day)} (${pctVal == null ? "—" : pct(pctVal)}) ${g.day >= 0 ? "↑" : "↓"}</td></tr>`;
+    }).join("");
+  tbody.innerHTML = rows || `<tr><td colspan="3">No priced holdings yet.</td></tr>`;
+}
+function renderMovers() {
+  const gainEl = $("#movers-gainers"), lossEl = $("#movers-losers");
+  if (!gainEl || !lastData) return;
+  const bySym = {};
+  (lastData.holdings || []).filter((h) => h.priced && h.today_gain != null).forEach((h) => {
+    const g = bySym[h.symbol] || (bySym[h.symbol] = {value: 0, day: 0});
+    g.value += h.current_value; g.day += h.today_gain;
+  });
+  const list = Object.entries(bySym).map(([sym, g]) => ({
+    sym, day: g.day, pctVal: g.value - g.day ? g.day / (g.value - g.day) * 100 : 0,
+  }));
+  const tile = (e) => `<div class="mover-tile ${e.day >= 0 ? "pos" : "neg"}"><span>${e.sym}</span>` +
+    `<span>${moversUnit === "$" ? moneySigned(e.day) : pct(e.pctVal)} ${e.day >= 0 ? "↑" : "↓"}</span></div>`;
+  const gainers = list.filter((e) => e.day > 0).sort((a, b) => b.day - a.day).slice(0, 8);
+  const losers = list.filter((e) => e.day < 0).sort((a, b) => a.day - b.day).slice(0, 8);
+  gainEl.innerHTML = gainers.map(tile).join("") || `<div class="small">No gainers today.</div>`;
+  lossEl.innerHTML = losers.map(tile).join("") || `<div class="small">No losers today.</div>`;
+}
+document.querySelectorAll("#movers-units button").forEach((b) =>
+  b.addEventListener("click", () => {
+    moversUnit = b.dataset.moversUnit;
+    document.querySelectorAll("#movers-units button").forEach((x) => x.classList.toggle("active", x === b));
+    renderMovers();
+  }));
+
 async function load() {
   const d = await (await fetch(`/api/dashboard?owner=${owner}`)).json();
   lastData = d;
@@ -493,6 +562,10 @@ async function load() {
   renderWatch();
   drawAllocation();
   loadGrowth();
+  renderMarkets();
+  renderBreakdown();
+  renderMovers();
+  loadMarkets();
   const t = d.totals;
   $("#kpis").innerHTML = [
     ["Portfolio value", money(t.value)],

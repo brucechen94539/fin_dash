@@ -40,6 +40,41 @@
 
 <section id="kpis" class="cards"></section>
 
+<!-- Overview: US Markets + Portfolio Breakdown on the left, Movers
+     on the right (stacked on narrow screens). Markets are live
+     Yahoo indices; Breakdown and Movers are computed from the
+     holdings already loaded, and follow the owner tab above. No
+     sync status is shown — fin_dash is CSV/manual import only. -->
+<div class="overview-grid">
+  <div>
+    <section class="panel">
+      <div class="panel-head"><h2>US Markets</h2></div>
+      <table id="markets-table"><tbody></tbody></table>
+      <p class="small">Indices are delayed Yahoo quotes, like holdings prices. Your Portfolio is the total for the owner tab above.</p>
+    </section>
+    <section class="panel">
+      <div class="panel-head"><h2>Portfolio Breakdown</h2></div>
+      <table id="breakdown-table">
+        <thead><tr><th>Brokerage</th><th class="num">Value</th><th class="num">Day change</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </section>
+  </div>
+  <section class="panel">
+    <div class="panel-head">
+      <h2>Movers</h2>
+      <div id="movers-units" role="group" aria-label="Movers unit">
+        <button data-movers-unit="%" >%</button><button data-movers-unit="$" class="active">$</button>
+      </div>
+    </div>
+    <p class="small">Top gainers and losers by today's move, aggregated by symbol across accounts.</p>
+    <div class="movers-grid">
+      <div><h3 class="movers-title pos">Gainers</h3><div id="movers-gainers"></div></div>
+      <div><h3 class="movers-title neg">Losers</h3><div id="movers-losers"></div></div>
+    </div>
+  </section>
+</div>
+
 <section class="panel">
   <div class="panel-head">
     <h2>Holdings</h2>
