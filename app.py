@@ -540,9 +540,24 @@ def dashboard():
             accounts.setdefault(h["account_name"],
                                 {"owner": h["owner_name"], "value": 0.0})
             accounts[h["account_name"]]["value"] += h["value"]
-    for h in holdings:  # needs the total above, so a second pass
-        h["pct_of_account"] = (h["value"] / total_value * 100
-                               if h["priced"] and total_value else None)
+    # % of account is per brokerage account (owner + account), matching
+    # the hosted dashboard — NOT a share of the household total. The
+    # old code divided by total_value, so e.g. AAPL showed 8.59% of the
+    # household instead of 61.00% of its E*TRADE account.
+    group_totals = {}
+    for h in holdings:
+        if h["priced"]:
+            key = (h["owner_id"], h["account_id"])
+            group_totals[key] = group_totals.get(key, 0.0) + h["value"]
+    for h in holdings:  # needs the totals above, so a second pass
+        group_total = group_totals.get((h["owner_id"], h["account_id"]), 0.0)
+        h["pct_of_account"] = (h["value"] / group_total * 100
+                               if h["priced"] and group_total else None)
+        # Previous close, as shown in the hosted detail panel: the
+        # price the day's change is measured from.
+        h["prev_close"] = (h["price"] - h["last_change"]
+                           if h["price"] is not None
+                           and h["last_change"] is not None else None)
     return jsonify({
         "owners": owners,
         "holdings": holdings,

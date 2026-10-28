@@ -42,6 +42,13 @@ const money = (n) => n == null ? (masked ? "****" : "—")
 const moneySigned = (n) => n == null ? (masked ? "****" : "—")
   : masked ? "****"
   : (n < 0 ? "-$" : "+$") + Math.abs(n).toLocaleString(undefined, {maximumFractionDigits: 2, minimumFractionDigits: 2});
+// Market cap as the hosted detail panel shows it: $5,074.8B, not the
+// full dollar figure ($5,065,639,878,000.00).
+const moneyB = (n) => n == null ? (masked ? "****" : "—")
+  : masked ? "****"
+  : n >= 1e9 ? `$${(n / 1e9).toFixed(1)}B`
+  : n >= 1e6 ? `$${(n / 1e6).toFixed(1)}M`
+  : money(n);
 // Collapsed account groups, persisted across reloads and owner-tab
 // switches, so the grouping (and which groups are open) stays put.
 let collapsedGroups = new Set();
@@ -237,7 +244,7 @@ function drawAllocation() {
     start = end;
   });
   ctx.beginPath(); ctx.arc(c.width / 2, c.height / 2, 60, 0, Math.PI * 2);
-  ctx.fillStyle = "#fff"; ctx.fill();
+  ctx.fillStyle = "#1e293b"; ctx.fill();
   $("#alloc-legend").innerHTML = entries.map(([sym, v], i) =>
     `<div><span style="display:inline-block;width:12px;height:12px;background:${colors[i % colors.length]}"></span> ` +
     `${sym} — ${(v / total * 100).toFixed(1)}% (${money(v)})</div>`).join("");
@@ -282,10 +289,10 @@ function drawGrowth() {
     });
     ctx.stroke();
   };
-  line(v, "#9aa7b8"); line(p, "#1f6feb");
-  ctx.fillStyle = "#333";
+  line(v, "#9aa7b8"); line(p, "#60a5fa");
+  ctx.fillStyle = "#e2e8f0";
   ctx.fillText(`${dates[0]} → ${dates[dates.length - 1]}`, pad, 18);
-  ctx.fillStyle = "#1f6feb"; ctx.fillText("Portfolio", pad, 36);
+  ctx.fillStyle = "#60a5fa"; ctx.fillText("Portfolio", pad, 36);
   ctx.fillStyle = "#9aa7b8"; ctx.fillText("VOO", pad + 90, 36);
   const pg = (p[p.length - 1] - 100), vg = (v[v.length - 1] - 100);
   $("#growth-meta").textContent =
@@ -347,17 +354,17 @@ function drawChart(history, canvas) {
   history.forEach((h, i) => {
     const x = pad + (i / (history.length - 1)) * W;
     const vh = (h.volume / vmax) * (H * 0.3);
-    ctx.fillStyle = "#9aa7b8";
+    ctx.fillStyle = "#64748b";
     ctx.fillRect(x, pad + H - vh, Math.max(1, W / history.length - 1), vh);
   });
-  ctx.beginPath(); ctx.strokeStyle = "#1f6feb"; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.strokeStyle = "#f8fafc"; ctx.lineWidth = 2;
   history.forEach((h, i) => {
     const x = pad + (i / (history.length - 1)) * W;
     const y = pad + (1 - (h.close - min) / (max - min || 1)) * (H * 0.65);
     i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
   });
   ctx.stroke();
-  ctx.fillStyle = "#333";
+  ctx.fillStyle = "#e2e8f0";
   const minMax = masked ? "**** – ****" : `${min.toFixed(2)} – ${max.toFixed(2)}`;
   ctx.fillText(`${history[0].date} → ${history[history.length - 1].date}  •  ${minMax}`, pad, 18);
 }
@@ -378,13 +385,17 @@ async function fillDetail(holdingId, symbol) {
     ? ` • Day range ${money(d.day_low)} – ${money(d.day_high)}` : "";
   // Beta / market cap are best-effort from Nasdaq's summary (no key);
   // when Nasdaq does not publish them for a symbol they are omitted,
-  // never estimated. Market cap goes through money() so the eye mask
-  // hides it like every other dollar amount.
+  // never estimated. Market cap is $B like the hosted panel, and the
+  // eye mask hides it like every other dollar amount.
   const beta = (d.beta != null) ? ` • Beta ${d.beta.toFixed(2)}` : "";
-  const mcap = (d.market_cap != null) ? ` • Market cap ${money(d.market_cap)}` : "";
+  const mcap = (d.market_cap != null) ? ` • Market cap ${moneyB(d.market_cap)}` : "";
   const sector = d.sector ? ` • ${d.sector}${d.industry ? ` — ${d.industry}` : ""}` : "";
+  // Previous close, as the hosted detail panel shows it: the price
+  // the day's change is measured from (Last price − Previous close).
+  const prev = (d.quote && d.quote.price != null && d.quote.change != null)
+    ? ` • Previous close ${money(d.quote.price - d.quote.change)}` : "";
   meta.textContent = d.quote
-    ? `Last quote ${money(d.quote.price)} via ${d.quote.provider} at ${d.quote.as_of || "unknown"}${day}${range}${beta}${mcap}${sector}`
+    ? `Last quote ${money(d.quote.price)} via ${d.quote.provider} at ${d.quote.as_of || "unknown"}${prev}${day}${range}${beta}${mcap}${sector}`
     : "No cached quote yet — click Refresh quotes.";
   drawChart(d.history, canvas);
 }
