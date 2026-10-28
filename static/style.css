@@ -120,6 +120,11 @@ thead th {
    separate detail panel at the bottom of the page. */
 .detail-row td { background: #16233a; padding: 16px; white-space: normal; max-width: none; }
 .detail-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 8px; }
+.detail-ranges { display: inline-flex; gap: 4px; padding: 4px; background: #16233a; border-radius: 999px; margin-bottom: 8px; }
+.detail-ranges button { border: none; background: transparent; border-radius: 999px; box-shadow: none; padding: 6px 12px; }
+.detail-ranges button:hover { background: rgba(255, 255, 255, 0.08); }
+.detail-ranges button.active { background: var(--card); color: var(--text); box-shadow: var(--shadow-sm); }
+.detail-hover { min-height: 1.5em; }
 .detail-chart { width: 100%; height: auto; }
 .symbol-col { width: 72px; white-space: normal; overflow-wrap: break-word; }
 .symbol-col strong { cursor: help; font-size: 15px; }

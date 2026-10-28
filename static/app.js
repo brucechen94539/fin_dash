@@ -161,7 +161,11 @@ function renderHoldings() {
           ? `<tr class="detail-row" data-detail-for="${h.id}"><td colspan="11">` +
             `<div class="detail-head"><strong>${h.symbol} — price + volume</strong>` +
             `<button data-close-detail>Close</button></div>` +
-            `<canvas class="detail-chart" width="900" height="300"></canvas>` +
+            `<div class="detail-ranges" role="group" aria-label="Chart range">` +
+            `<button data-detail-range="1M">1M</button><button data-detail-range="3M">3M</button>` +
+            `<button data-detail-range="6M">6M</button><button data-detail-range="1Y" class="active">1Y</button></div>` +
+            `<canvas class="detail-chart" width="900" height="340"></canvas>` +
+            `<p class="detail-hover small">Hover a point for its date, close, day change, volume and moving averages.</p>` +
             `<p class="detail-meta small">Loading chart…</p></td></tr>`
           : "")).join("");
       html += totalRow("Account total", tt, tg, tv);
@@ -344,29 +348,97 @@ function fillSelects() {
   }
 }
 
-function drawChart(history, canvas) {
+// Elaborated price + volume chart, drawn on canvas (no new dependency).
+// Price pane on top, volume pane below; left price axis with gridlines,
+// bottom date axis, 50-day and 200-day moving averages, a dashed cost
+// basis line when the holding's cost per share is in view, a last-price
+// dot, and a hover crosshair (see fillDetail, which wires mousemove
+// to the .detail-hover line). Ranges filter the 1-year history by
+// calendar days; moving averages are computed on the full history
+// first, so a 1M view still shows a true 50-day average, not an
+// average of only the visible month.
+let detailRange = "1Y";
+const DETAIL_RANGES = {"1M": 30, "3M": 90, "6M": 180, "1Y": 365};
+function movingAverage(closes, window) {
+  const out = new Array(closes.length).fill(null);
+  let sum = 0;
+  for (let i = 0; i < closes.length; i++) {
+    sum += closes[i];
+    if (i >= window) sum -= closes[i - window];
+    if (i >= window - 1) out[i] = sum / window;
+  }
+  return out;
+}
+function drawChart(history, canvas, costBasis) {
   const c = canvas, ctx = c.getContext("2d");
   ctx.clearRect(0, 0, c.width, c.height);
-  if (!history.length) { ctx.fillText("No price history available for this symbol.", 20, 30); return; }
-  const closes = history.map((h) => h.close), vols = history.map((h) => h.volume);
-  const min = Math.min(...closes), max = Math.max(...closes), vmax = Math.max(...vols, 1);
-  const pad = 30, W = c.width - pad * 2, H = c.height - pad * 2;
-  history.forEach((h, i) => {
-    const x = pad + (i / (history.length - 1)) * W;
-    const vh = (h.volume / vmax) * (H * 0.3);
-    ctx.fillStyle = "#64748b";
-    ctx.fillRect(x, pad + H - vh, Math.max(1, W / history.length - 1), vh);
+  ctx.font = "12px -apple-system, Helvetica, Arial, sans-serif";
+  if (!history.length) { ctx.fillStyle = "#e2e8f0"; ctx.fillText("No price history available for this symbol.", 20, 30); return; }
+  const days = DETAIL_RANGES[detailRange] || 365;
+  const lastDate = new Date(history[history.length - 1].date);
+  const cutoff = new Date(lastDate); cutoff.setDate(cutoff.getDate() - days);
+  const visible = history.map((h, i) => ({...h, idx: i})).filter((h) => new Date(h.date) >= cutoff);
+  const data = visible.length ? visible : history.map((h, i) => ({...h, idx: i}));
+  const closes = data.map((h) => h.close);
+  const ma50Full = movingAverage(history.map((h) => h.close), 50);
+  const ma200Full = movingAverage(history.map((h) => h.close), 200);
+  let min = Math.min(...closes), max = Math.max(...closes);
+  if (costBasis != null && costBasis > 0) { min = Math.min(min, costBasis); max = Math.max(max, costBasis); }
+  const pad = min * 0.02, lo = min - pad, hi = max + pad;
+  const left = 72, right = 12, top = 18, bottom = 28, gap = 10;
+  const priceH = 200, volH = 70, W = c.width - left - right;
+  const x = (i) => left + (data.length > 1 ? (i / (data.length - 1)) * W : W / 2);
+  const y = (v) => top + (1 - (v - lo) / (hi - lo || 1)) * priceH;
+  const vmax = Math.max(...data.map((h) => h.volume), 1);
+  // Gridlines + price axis (masked like every other dollar amount).
+  ctx.strokeStyle = "#334155"; ctx.lineWidth = 1; ctx.fillStyle = "#94a3b8"; ctx.textAlign = "right";
+  for (let g = 0; g <= 4; g++) {
+    const v = lo + (hi - lo) * g / 4, gy = y(v);
+    ctx.beginPath(); ctx.moveTo(left, gy); ctx.lineTo(left + W, gy); ctx.stroke();
+    ctx.fillText(masked ? "****" : `$${v.toFixed(2)}`, left - 8, gy + 4);
+  }
+  // Volume bars, green on up days, red on down days.
+  data.forEach((h, i) => {
+    const vh = (h.volume / vmax) * volH;
+    ctx.fillStyle = h.close >= (h.open || h.close) ? "#22c55e" : "#f87171";
+    ctx.fillRect(x(i), top + priceH + gap + volH - vh, Math.max(1, W / data.length - 1), vh);
   });
+  const line = (values, color, width) => {
+    ctx.beginPath(); ctx.strokeStyle = color; ctx.lineWidth = width; let started = false;
+    data.forEach((h, i) => {
+      const v = values[h.idx];
+      if (v == null) return;
+      const px = x(i), py = y(v);
+      started ? ctx.lineTo(px, py) : ctx.moveTo(px, py); started = true;
+    });
+    ctx.stroke();
+  };
+  line(ma200Full, "#c084fc", 1.5);
+  line(ma50Full, "#fb923c", 1.5);
   ctx.beginPath(); ctx.strokeStyle = "#f8fafc"; ctx.lineWidth = 2;
-  history.forEach((h, i) => {
-    const x = pad + (i / (history.length - 1)) * W;
-    const y = pad + (1 - (h.close - min) / (max - min || 1)) * (H * 0.65);
-    i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
-  });
+  data.forEach((h, i) => { const px = x(i), py = y(h.close); i ? ctx.lineTo(px, py) : ctx.moveTo(px, py); });
   ctx.stroke();
-  ctx.fillStyle = "#e2e8f0";
-  const minMax = masked ? "**** – ****" : `${min.toFixed(2)} – ${max.toFixed(2)}`;
-  ctx.fillText(`${history[0].date} → ${history[history.length - 1].date}  •  ${minMax}`, pad, 18);
+  // Cost basis: dashed green line + label, only when in view.
+  if (costBasis != null && costBasis > 0 && costBasis >= lo && costBasis <= hi) {
+    ctx.save(); ctx.setLineDash([6, 4]); ctx.strokeStyle = "#22c55e"; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(left, y(costBasis)); ctx.lineTo(left + W, y(costBasis)); ctx.stroke(); ctx.restore();
+    ctx.fillStyle = "#22c55e"; ctx.textAlign = "left";
+    ctx.fillText(masked ? "Cost ****" : `Cost $${costBasis.toFixed(2)}`, left + 6, y(costBasis) - 6);
+  }
+  // Last-price dot + label.
+  const last = data[data.length - 1];
+  ctx.beginPath(); ctx.fillStyle = "#f8fafc"; ctx.arc(x(data.length - 1), y(last.close), 4, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = "#e2e8f0"; ctx.textAlign = "left";
+  ctx.fillText(masked ? "****" : `$${last.close.toFixed(2)}`, Math.min(x(data.length - 1) + 8, left + W - 60), y(last.close) - 8);
+  // Date axis: first, middle, last.
+  ctx.fillStyle = "#94a3b8"; ctx.textAlign = "center";
+  const labelIdx = [0, Math.floor(data.length / 2), data.length - 1].filter((v, i, a) => a.indexOf(v) === i);
+  labelIdx.forEach((i) => ctx.fillText(data[i].date, x(i), top + priceH + gap + volH + 20));
+  ctx.textAlign = "left";
+  // Store geometry for the hover handler in fillDetail.
+  c._detail = {data, ma50Full, ma200Full, x, y, left, W, top, priceH};
+  const rangeLabel = `${data[0].date} → ${last.date} • ${masked ? "**** – ****" : `$${min.toFixed(2)} – $${max.toFixed(2)}`}`;
+  ctx.fillStyle = "#e2e8f0"; ctx.fillText(rangeLabel, left, 14);
 }
 
 async function fillDetail(holdingId, symbol) {
@@ -397,7 +469,39 @@ async function fillDetail(holdingId, symbol) {
   meta.textContent = d.quote
     ? `Last quote ${money(d.quote.price)} via ${d.quote.provider} at ${d.quote.as_of || "unknown"}${prev}${day}${range}${beta}${mcap}${sector}`
     : "No cached quote yet — click Refresh quotes.";
-  drawChart(d.history, canvas);
+  // Cost basis for this holding (not just the symbol — the same
+  // symbol can sit in several accounts at different costs).
+  const holding = (lastData.holdings || []).find((h) => String(h.id) === String(holdingId));
+  const costBasis = holding ? holding.cost_per_share : null;
+  const redraw = () => drawChart(d.history, canvas, costBasis);
+  row.querySelectorAll("[data-detail-range]").forEach((x) => x.classList.toggle("active", x.dataset.detailRange === detailRange));
+  redraw();
+  // Range buttons: re-filter, don't re-fetch.
+  row.querySelectorAll("[data-detail-range]").forEach((b) =>
+    b.addEventListener("click", () => {
+      detailRange = b.dataset.detailRange;
+      row.querySelectorAll("[data-detail-range]").forEach((x) => x.classList.toggle("active", x === b));
+      redraw();
+    }));
+  // Hover: nearest visible bar → date, close, day change, volume,
+  // 50-day and 200-day averages at that date.
+  const hover = row.querySelector(".detail-hover");
+  canvas.addEventListener("mousemove", (e) => {
+    const det = canvas._detail; if (!det || !hover) return;
+    const rect = canvas.getBoundingClientRect();
+    const px = (e.clientX - rect.left) * (canvas.width / rect.width);
+    let best = 0, bestDx = Infinity;
+    det.data.forEach((h, i) => { const dx = Math.abs(det.x(i) - px); if (dx < bestDx) { bestDx = dx; best = i; } });
+    const h = det.data[best];
+    const prevClose = best > 0 ? det.data[best - 1].close : (d.history[h.idx - 1] ? d.history[h.idx - 1].close : null);
+    const change = prevClose != null ? ((h.close - prevClose) / prevClose * 100) : null;
+    const ma50 = det.ma50Full[h.idx], ma200 = det.ma200Full[h.idx];
+    hover.textContent = `${h.date} • Close ${money(h.close)}` +
+      (change != null ? ` (${change >= 0 ? "+" : ""}${change.toFixed(2)}% vs prior day)` : "") +
+      ` • Volume ${Math.round(h.volume).toLocaleString()}` +
+      (ma50 != null ? ` • 50-day avg ${money(ma50)}` : "") +
+      (ma200 != null ? ` • 200-day avg ${money(ma200)}` : "");
+  });
 }
 
 // Expand / collapse all account groups (persisted like single toggles).
