@@ -125,6 +125,7 @@ thead th {
 .detail-ranges button:hover { background: rgba(255, 255, 255, 0.08); }
 .detail-ranges button.active { background: var(--card); color: var(--text); box-shadow: var(--shadow-sm); }
 .detail-hover { min-height: 1.5em; }
+#growth-hover { min-height: 1.5em; }
 .detail-chart { width: 100%; height: auto; }
 .symbol-col { width: 72px; white-space: normal; overflow-wrap: break-word; }
 .symbol-col strong { cursor: help; font-size: 15px; }
@@ -148,7 +149,13 @@ input, select {
 /* Watch list as soft cards, not bare bullets. */
 #watch-list { list-style: none; padding: 0; margin: 12px 0 0; }
 #watch-list li { margin: 8px 0; padding: 10px 12px; background: #16233a; border-radius: 10px; }
-#alloc-chart { max-width: 320px; height: auto; }
+/* Allocation: compact footprint, not a full-width panel with a big
+   donut on the left and empty space to its right. The donut is
+   smaller (220px) and the legend sits beside it, so the panel is
+   roughly one row tall and the horizontal space is actually used. */
+.alloc-row { display: flex; gap: 20px; align-items: center; flex-wrap: wrap; }
+#alloc-chart { max-width: 220px; height: auto; flex: 0 0 auto; }
+#alloc-legend { flex: 1 1 200px; min-width: 180px; }
 #alloc-legend div { margin: 6px 0; font-size: 13px; }
 /* Phone card layout: below 640px the wide holdings table stops
    scrolling sideways and each holding row becomes a card, with the

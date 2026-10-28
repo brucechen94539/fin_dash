@@ -73,15 +73,18 @@
       <button data-range="ALL">ALL</button>
     </div>
   </div>
-  <canvas id="growth-chart" width="900" height="300"></canvas>
+  <canvas id="growth-chart" width="900" height="340"></canvas>
+  <p id="growth-hover" class="small">Hover a point for that date's portfolio vs VOO index.</p>
   <p id="growth-meta"></p>
   <p class="small">Growth is based on current holdings held over the whole period, not actual purchase dates. Both series are indexed to 100 at the start of the selected range.</p>
 </section>
 
 <section class="panel">
   <h2>Allocation</h2>
-  <canvas id="alloc-chart" width="320" height="320"></canvas>
-  <div id="alloc-legend"></div>
+  <div class="alloc-row">
+    <canvas id="alloc-chart" width="220" height="220"></canvas>
+    <div id="alloc-legend"></div>
+  </div>
   <p class="small">Share of total current value, by symbol (across accounts).</p>
 </section>
 

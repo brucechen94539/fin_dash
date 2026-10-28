@@ -247,7 +247,11 @@ function drawAllocation() {
     ctx.closePath(); ctx.fillStyle = colors[i % colors.length]; ctx.fill();
     start = end;
   });
-  ctx.beginPath(); ctx.arc(c.width / 2, c.height / 2, 60, 0, Math.PI * 2);
+  // Inner hole scales with the canvas (60% of the outer radius), so
+  // changing the canvas size in the template resizes the donut
+  // without editing this code.
+  const outerR = Math.min(c.width, c.height) / 2 - 10;
+  ctx.beginPath(); ctx.arc(c.width / 2, c.height / 2, outerR * 0.6, 0, Math.PI * 2);
   ctx.fillStyle = "#1e293b"; ctx.fill();
   $("#alloc-legend").innerHTML = entries.map(([sym, v], i) =>
     `<div><span style="display:inline-block;width:12px;height:12px;background:${colors[i % colors.length]}"></span> ` +
@@ -261,9 +265,23 @@ async function loadGrowth() {
   drawGrowth();
 }
 
-function drawGrowth() {
+// Elaborated Growth vs VOO chart (canvas, no new dependency).
+// Indexed to 100 at the range start, as before, but now with: a left
+// index axis with gridlines, a dashed 100 baseline, a date axis, a
+// shaded gap between the two lines (green where the portfolio is
+// ahead, red where it trails), a soft fill under the portfolio line,
+// a dashed VOO line so the two are distinguishable without colour
+// alone, end dots + end-index labels, and a hover crosshair. The
+// meta line below the chart adds outperformance in percentage
+// points, the share of days the portfolio was ahead, and each
+// series' maximum drawdown over the range — all computed from the
+// same re-indexed series, never estimated. Indexed values are not
+// dollar amounts, so they stay visible when values are masked.
+let growthHoverIdx = null;
+function drawGrowth(hoverIdx = null) {
   const c = $("#growth-chart"), ctx = c.getContext("2d");
   ctx.clearRect(0, 0, c.width, c.height);
+  ctx.font = "12px -apple-system, Helvetica, Arial, sans-serif";
   if (!lastGrowth || !lastGrowth.dates.length) {
     $("#growth-meta").textContent = "No growth history yet — add holdings first.";
     return;
@@ -282,34 +300,119 @@ function drawGrowth() {
   const p = lastGrowth.portfolio_index.slice(startIdx).map((v) => v / p0 * 100);
   const v = lastGrowth.voo_index.slice(startIdx).map((x) => x / v0 * 100);
   const all = [...p, ...v];
-  const min = Math.min(...all), max = Math.max(...all);
-  const pad = 30, W = c.width - pad * 2, H = c.height - pad * 2;
-  const line = (series, color) => {
-    ctx.beginPath(); ctx.strokeStyle = color; ctx.lineWidth = 2;
-    series.forEach((val, i) => {
-      const x = pad + (series.length > 1 ? (i / (series.length - 1)) * W : W / 2);
-      const y = pad + (1 - (val - min) / (max - min || 1)) * H;
-      i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
-    });
-    ctx.stroke();
+  const rawMin = Math.min(...all), rawMax = Math.max(...all);
+  const padV = (rawMax - rawMin) * 0.08 || 1;
+  const lo = rawMin - padV, hi = rawMax + padV;
+  const left = 64, right = 76, top = 30, bottom = 28, W = c.width - left - right, H = c.height - top - bottom;
+  const x = (i) => left + (p.length > 1 ? (i / (p.length - 1)) * W : W / 2);
+  const y = (val) => top + (1 - (val - lo) / (hi - lo || 1)) * H;
+  // Legend (top row, above the plot area).
+  ctx.fillStyle = "#60a5fa"; ctx.fillRect(left, 8, 18, 3);
+  ctx.fillStyle = "#e2e8f0"; ctx.textAlign = "left"; ctx.fillText("Portfolio", left + 24, 14);
+  ctx.fillStyle = "#94a3b8"; ctx.fillRect(left + 110, 8, 18, 3);
+  ctx.fillText("VOO", left + 134, 14);
+  ctx.fillText(`${dates[0]} → ${dates[dates.length - 1]}`, left + 190, 14);
+  // Gridlines + index axis.
+  ctx.textAlign = "right";
+  for (let g = 0; g <= 4; g++) {
+    const val = lo + (hi - lo) * g / 4, gy = y(val);
+    ctx.strokeStyle = "#334155"; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(left, gy); ctx.lineTo(left + W, gy); ctx.stroke();
+    ctx.fillStyle = "#94a3b8"; ctx.fillText(val.toFixed(1), left - 8, gy + 4);
+  }
+  // Dashed 100 baseline (the range start), when in view.
+  if (lo <= 100 && 100 <= hi) {
+    ctx.save(); ctx.setLineDash([6, 4]); ctx.strokeStyle = "#64748b";
+    ctx.beginPath(); ctx.moveTo(left, y(100)); ctx.lineTo(left + W, y(100)); ctx.stroke(); ctx.restore();
+    ctx.fillStyle = "#64748b"; ctx.fillText("100", left - 8, y(100) - 6);
+  }
+  // Shaded gap between the lines, segment by segment.
+  for (let i = 1; i < p.length; i++) {
+    const ahead = ((p[i - 1] + p[i]) / 2) > ((v[i - 1] + v[i]) / 2);
+    ctx.fillStyle = ahead ? "rgba(34, 197, 94, 0.16)" : "rgba(248, 113, 113, 0.16)";
+    ctx.beginPath();
+    ctx.moveTo(x(i - 1), y(p[i - 1])); ctx.lineTo(x(i), y(p[i]));
+    ctx.lineTo(x(i), y(v[i])); ctx.lineTo(x(i - 1), y(v[i - 1])); ctx.closePath(); ctx.fill();
+  }
+  // Soft fill under the portfolio line.
+  const grad = ctx.createLinearGradient(0, top, 0, top + H);
+  grad.addColorStop(0, "rgba(96, 165, 250, 0.22)"); grad.addColorStop(1, "rgba(96, 165, 250, 0)");
+  ctx.fillStyle = grad; ctx.beginPath(); ctx.moveTo(x(0), y(p[0]));
+  p.forEach((val, i) => ctx.lineTo(x(i), y(val)));
+  ctx.lineTo(x(p.length - 1), top + H); ctx.lineTo(x(0), top + H); ctx.closePath(); ctx.fill();
+  const line = (series, color, width, dashed) => {
+    ctx.beginPath(); ctx.strokeStyle = color; ctx.lineWidth = width;
+    ctx.save(); if (dashed) ctx.setLineDash([7, 5]);
+    series.forEach((val, i) => { const px = x(i), py = y(val); i ? ctx.lineTo(px, py) : ctx.moveTo(px, py); });
+    ctx.stroke(); ctx.restore();
   };
-  line(v, "#9aa7b8"); line(p, "#60a5fa");
-  ctx.fillStyle = "#e2e8f0";
-  ctx.fillText(`${dates[0]} → ${dates[dates.length - 1]}`, pad, 18);
-  ctx.fillStyle = "#60a5fa"; ctx.fillText("Portfolio", pad, 36);
-  ctx.fillStyle = "#9aa7b8"; ctx.fillText("VOO", pad + 90, 36);
-  const pg = (p[p.length - 1] - 100), vg = (v[v.length - 1] - 100);
-  $("#growth-meta").textContent =
-    `Portfolio ${pg >= 0 ? "+" : ""}${pg.toFixed(2)}% vs VOO ${vg >= 0 ? "+" : ""}${vg.toFixed(2)}% over this range.` +
-    (lastGrowth.symbols_failed.length ? ` History unavailable for: ${lastGrowth.symbols_failed.join(", ")}.` : "");
+  line(v, "#94a3b8", 2, true);
+  line(p, "#60a5fa", 2.5, false);
+  // Start dot (both at 100) and end dots + end-index labels.
+  const dot = (px, py, color) => { ctx.beginPath(); ctx.fillStyle = color; ctx.arc(px, py, 4, 0, Math.PI * 2); ctx.fill(); };
+  dot(x(0), y(100), "#e2e8f0");
+  const lastI = p.length - 1;
+  dot(x(lastI), y(p[lastI]), "#60a5fa"); dot(x(lastI), y(v[lastI]), "#94a3b8");
+  ctx.textAlign = "left";
+  ctx.fillStyle = "#60a5fa"; ctx.fillText(p[lastI].toFixed(1), x(lastI) + 8, y(p[lastI]) + 4);
+  ctx.fillStyle = "#94a3b8"; ctx.fillText(v[lastI].toFixed(1), x(lastI) + 8, y(v[lastI]) + 4);
+  // Date axis: first, middle, last.
+  ctx.fillStyle = "#94a3b8"; ctx.textAlign = "center";
+  [0, Math.floor(lastI / 2), lastI].filter((i, _, a) => a.indexOf(i) === i)
+    .forEach((i) => ctx.fillText(dates[i], x(i), top + H + 20));
+  // Hover crosshair.
+  if (hoverIdx != null && hoverIdx >= 0 && hoverIdx < p.length) {
+    ctx.save(); ctx.setLineDash([4, 4]); ctx.strokeStyle = "#f8fafc"; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(x(hoverIdx), top); ctx.lineTo(x(hoverIdx), top + H); ctx.stroke(); ctx.restore();
+    dot(x(hoverIdx), y(p[hoverIdx]), "#60a5fa"); dot(x(hoverIdx), y(v[hoverIdx]), "#94a3b8");
+  }
+  c._growth = {dates, p, v, x};
+  // Meta: range return, outperformance, days ahead, max drawdowns.
+  const pg = p[lastI] - 100, vg = v[lastI] - 100, out = pg - vg;
+  const aheadDays = p.filter((val, i) => val > v[i]).length;
+  const drawdown = (series) => {
+    let peak = series[0], worst = 0;
+    series.forEach((val) => { if (val > peak) peak = val; worst = Math.min(worst, (val - peak) / peak * 100); });
+    return worst;
+  };
+  const fmt = (n) => `${n >= 0 ? "+" : ""}${n.toFixed(2)}%`;
+  const meta = $("#growth-meta");
+  meta.innerHTML = `Portfolio <span class="${pg >= 0 ? "pos" : "neg"}">${fmt(pg)}</span> vs VOO ` +
+    `<span class="${vg >= 0 ? "pos" : "neg"}">${fmt(vg)}</span> over this range • ` +
+    `Outperformance <span class="${out >= 0 ? "pos" : "neg"}">${fmt(out)}</span> • ` +
+    `Ahead of VOO on ${aheadDays} of ${p.length} days (${(aheadDays / p.length * 100).toFixed(0)}%) • ` +
+    `Max drawdown: Portfolio ${drawdown(p).toFixed(2)}% / VOO ${drawdown(v).toFixed(2)}%.`;
+  if (lastGrowth.symbols_failed.length) meta.appendChild(document.createTextNode(` History unavailable for: ${lastGrowth.symbols_failed.join(", ")}.`));
 }
 
 document.querySelectorAll("#growth-ranges button").forEach((b) =>
   b.addEventListener("click", () => {
     growthRange = b.dataset.range;
     document.querySelectorAll("#growth-ranges button").forEach((x) => x.classList.toggle("active", x === b));
+    growthHoverIdx = null;
     drawGrowth();
   }));
+
+// Growth hover: nearest date → portfolio vs VOO index, gap, and
+// each series' return since the range start.
+$("#growth-chart").addEventListener("mousemove", (e) => {
+  const c = $("#growth-chart"), det = c._growth, hover = $("#growth-hover");
+  if (!det || !hover) return;
+  const rect = c.getBoundingClientRect();
+  const px = (e.clientX - rect.left) * (c.width / rect.width);
+  let best = 0, bestDx = Infinity;
+  det.p.forEach((_, i) => { const dx = Math.abs(det.x(i) - px); if (dx < bestDx) { bestDx = dx; best = i; } });
+  growthHoverIdx = best;
+  drawGrowth(best);
+  const gap = det.p[best] - det.v[best];
+  hover.textContent = `${det.dates[best]} • Portfolio ${det.p[best].toFixed(1)} (${(det.p[best] - 100).toFixed(2)}%) • ` +
+    `VOO ${det.v[best].toFixed(1)} (${(det.v[best] - 100).toFixed(2)}%) • Gap ${gap >= 0 ? "+" : ""}${gap.toFixed(1)} points.`;
+});
+$("#growth-chart").addEventListener("mouseleave", () => {
+  growthHoverIdx = null; drawGrowth();
+  const hover = $("#growth-hover");
+  if (hover) hover.textContent = "Hover a point for that date's portfolio vs VOO index.";
+});
 
 async function load() {
   const d = await (await fetch(`/api/dashboard?owner=${owner}`)).json();
